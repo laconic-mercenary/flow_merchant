@@ -18,7 +18,7 @@ app = func.FunctionApp()
 
 def APP_ENV_APITOKEN():
     return "MERCHANT_API_TOKEN"
-e
+
 def APP_ENV_STORAGEACCTCS():
     return "storageAccountConnectionString"
 
@@ -319,9 +319,6 @@ def M_STATE_KEY_VERSION():
 
 def M_STATE_KEY_ACTION():
     return "action"
-
-def M_STATE_KEY_TICKER():
-    return "ticker"
 
 def M_STATE_KEY_CLOSE():
     return "close"
