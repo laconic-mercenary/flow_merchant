@@ -1,0 +1,29 @@
+{
+    "metadata": {
+        "key": "yR4WnGvoC5po4IYNjipMzdHZ7jzw5eF"
+    },
+    "security" : {
+        "ticker" : "{{ticker}}",
+        "exchange" : "{{exchange}}",
+        "type" : "stock",
+        "contracts" : 10,
+        "interval" : "{{interval}}",
+        "price" : {
+            "high" : "{{high}}",
+            "low" : "{{low}}",
+            "open" : "{{open}}",
+            "close" : "{{close}}"
+        }
+    },
+    "flowmerchant": {
+        "suggested_stoploss" : 0.05,
+        "takeprofit_percent" : 0.05,
+        "rest_interval_minutes" : 180,
+        "low_interval": "5m",
+        "high_interval": "60m",
+        "version": "20241102",
+        "action": "buy",
+        "rest_after_buy": true
+    },
+    "notes": "test"
+}

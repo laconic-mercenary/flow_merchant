@@ -359,7 +359,7 @@ class MerchantSignal:
         self.metadata = msg_body.get("metadata", {})
         self.security = msg_body.get("security", {})
         self.flowmerchant = msg_body.get("flowmerchant", {})
-        self.notes = msg_body.get("notes", "")
+        self._notes = msg_body.get("notes", "")
         self.TABLE_NAME = "flowmerchant"
 
     @staticmethod
@@ -493,8 +493,13 @@ class MerchantSignal:
     def high_interval(self):
         return self.flowmerchant.get("high_interval")
 
+    def rest_after_buy(self) -> bool:
+        if "rest_after_buy" in self.flowmerchant:
+            return bool(self.flowmerchant.get("rest_after_buy"))
+        return False
+
     def notes(self):
-        return self.notes
+        return self._notes
 
     def __str__(self) -> str:
         return (
@@ -635,7 +640,10 @@ class Merchant:
         if signal.interval() == self.low_interval():
             if signal.action() == S_ACTION_BUY():
                 self._place_order(signal)
-                self._start_selling()
+                if signal.rest_after_buy():
+                    self._start_resting()
+                else:    
+                    self._start_selling()
                 self._happily_say(self.get_merchant_id(signal), f"I'm looking to sell my {signal.ticker()}, because I made a purchase!")
                 return True
         elif signal.interval() == self.high_interval():
@@ -662,7 +670,7 @@ class Merchant:
         rest_interval_ms = self.rest_interval_minutes() * 60 * 1000
         if (now_timestamp_ms > self.last_action_time() + rest_interval_ms):
             self._start_shopping()
-            self._happily_say(self.get_merchant_id(signal), "I'm going shopping - because I am done resting.")
+            self._happily_say(self.get_merchant_id(signal), "Finished my rest - I am going shopping.")
         else:
             time_left_in_seconds = now_timestamp_ms - (self.last_action_time() + rest_interval_ms)
             time_left_in_seconds = time_left_in_seconds / 1000.0
