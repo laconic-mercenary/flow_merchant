@@ -20,12 +20,12 @@ def APP_ENV_APITOKEN():
     return "MERCHANT_API_TOKEN"
 
 def APP_ENV_STORAGEACCTCS():
-    return "storageAccountConnectionString"
+    return "storageAccountConnectionString"signal
 
 @app.route(route="merchant_api", 
             auth_level=func.AuthLevel.ANONYMOUS)
 def merchant_api(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('Python HTTP trigger function processed a request.')
+    logging.info("Python HTTP trigger function processed a request.")
     is_valid, result = validate_req(req)
     if not is_valid:
         return result
@@ -55,10 +55,11 @@ def handle_get(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse("not found", status_code=404)
 
 def handle_post(req: func.HttpRequest) -> func.HttpResponse:
-    body = req.get_body().decode('utf-8')
+    body = req.get_body().decode("utf-8")
     headers = dict(req.headers)
     logging.info(f"received merchant signal: {body}")
     logging.debug(f"headers: {headers}")
+    
     with TableServiceClient.from_connection_string(os.environ[APP_ENV_STORAGEACCTCS()]) as table_service:
         message_body = json.loads(body)
         signal = MerchantSignal.parse(message_body)
@@ -165,9 +166,20 @@ def default_event_logger() -> EventLoggable:
 
 from abc import ABC, abstractmethod
 
-class MarketOrderable(ABC):
+class LiveCapable(ABC):
+    
     @abstractmethod
-    def place_buy_market_order(self, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float) -> dict:
+    def update_all_holdings(self) -> dict:
+        pass
+
+class OrderCapable(ABC):
+
+    @abstractmethod
+    def place_limit_order(self, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float, broker_params={}) -> dict:
+        pass
+
+    @abstractmethod
+    def place_test_order(self, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float, broker_params={}) -> dict:
         pass
 
     def create_event(self, type: str, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float) -> dict:
@@ -202,14 +214,17 @@ class BrokerRepository:
     def __init__(self):
         self.__repository = {
             "stock": IBKRClient(),
-            "crypto": IBKRClient(),
+            "crypto": MEXCClient(),
             "forex": None
         }
 
-    def get_for_security(self, security_type: str) -> MarketOrderable:
+    def get_for_security(self, security_type: str) -> OrderCapable:
         if security_type not in self.__repository:
             raise ValueError(f"security type {security_type} not supported")
         return self.__repository[security_type]
+    
+##
+# IBKR
     
 def IBKR_ENV_GATEWAY_ENDPOINT():
     return "IBKR_GATEWAY_ENDPOINT" 
@@ -217,9 +232,12 @@ def IBKR_ENV_GATEWAY_ENDPOINT():
 def IBKR_ENV_GATEWAY_PASSWD():
     return "IBKR_GATEWAY_PASSWORD"
 
-class IBKRClient(MarketOrderable):
+class IBKRClient(OrderCapable):
 
-    def place_buy_market_order(self, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float) -> dict:
+    def place_test_order(self, source, ticker, contracts, limit, take_profit, stop_loss, broker_params={}) -> dict:
+        logging.warning(f"IBKR test order - not implemented")
+
+    def place_limit_order(self, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float, broker_params={}) -> dict:
         event = self.create_event(type="IBKROrder", source=source, ticker=ticker, contracts=contracts, limit=limit, take_profit=take_profit, stop_loss=stop_loss)
         gateway_endpoint = self._cfg_gateway_endpoint()
         headers = {
@@ -248,17 +266,476 @@ class IBKRClient(MarketOrderable):
             raise ValueError(f"{IBKR_ENV_GATEWAY_PASSWD()} cannot be None")
         return gateway_passwd
 
+##
+# MEXC
+
+from urllib.parse import urlencode
+
+import hmac
+import hashlib
+
+def MEXC_ENV_API_ENDPOINT():
+    return "MEXC_API_ENDPOINT" 
+
+def MEXC_ENV_API_KEY():
+    return "MEXC_API_KEY"
+
+def MEXC_ENV_API_SECRET():
+    return "MEXC_API_SECRET"
+
+def MEXC_API_ENDPOINT():
+    return "https://api.mexc.com"
+
+def MEXC_API_RECEIVE_WINDOW_MILLIS():
+    return 10000
+
+class MEXCClient(OrderCapable):
+
+    def place_test_order(self, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float, broker_params={}) -> dict:
+        logging.debug("place_test_order")
+
+        result = ""
+        result += f">>>> TEST ORDER START"
+        result += f"\n>> (BEFORE) Get Orders: {self._api_get_orders(ticker)}"
+        result += f"\n>> (BEFORE) Get Account: {self._api_get_account_info()}"
+
+        """ NOTE
+        be very careful here about how you interpret gap percent for TP and SL
+        If the bias is bullish, then it would be 
+        
+        >> TP TRIGGER = TP - (TP * TP_GAP_PERCENT)
+
+        FOr example if the current price is $5 and the TP is $7, you want the trigger price to be less than $7
+        """
+        if "take_profit_gap_percent" not in broker_params:
+            raise ValueError("take_profit_gap_percent is required")
+        take_profit_trigger = take_profit - (take_profit * broker_params["take_profit_gap_percent"])
+
+        if "stop_loss_gap_percent" not in broker_params:
+            raise ValueError("stop_loss_gap_percent is required")
+        stop_loss_trigger = stop_loss - (stop_loss * broker_params["stop_loss_gap_percent"])
+
+        result += f"\n>> (BEFORE) Params Listing: ticker={ticker}, qty={contracts}, tp={take_profit}, tp-trigger={take_profit_trigger}, sl={stop_loss}, sl-trigger={stop_loss_trigger}"
+
+        order_result = self._place_advanced_order(
+            ticker=ticker, 
+            contracts=contracts, 
+            limit_price=None,
+            take_profit=take_profit, 
+            take_profit_trigger=take_profit_trigger,
+            stop_loss=stop_loss, 
+            stop_loss_trigger=stop_loss_trigger,
+            action="BUY",
+            dry_run=False
+        )
+        result += f"\n>> Place Advanced Order: {order_result}"
+        result += f"\n>> (AFTER) Get Orders: {self._api_get_orders(ticker)}"
+        result += f"\n>> (AFTER) Get Account: {self._api_get_account_info()}"
+
+        time.sleep(5.0)
+    
+        executed_quantity = float(order_result["market_order"]["executedQty"])
+        sell_result = self._api_place_order(
+            ticker=ticker,
+            contracts=executed_quantity,
+            limit_price=None,
+            take_profit=take_profit,
+            stop_loss=stop_loss,
+            action="SELL",
+            dry_run=False
+        )
+        result += f"\n>> Place Sell Order: {sell_result}"
+        result += f"\n>> (AFTER SELL) Get Orders: {self._api_get_orders(ticker)}"
+        result += f"\n>> (AFTER SELL) Get Account: {self._api_get_account_info()}"
+        
+        result += f"\n>>>> TEST ORDER END"
+        default_event_logger().log_notice(f"MEXC test order overall result: {result}")
+
+    def place_limit_order(self, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float, broker_params={}) -> dict:
+        logging.debug("place_limit_order")
+        """ NOTE
+        For now we are placing a market order because MEXC's API doesn't seem to support OCO orders.
+        limit_price parameter is ignored and set to None in the subsequent call.
+        The source parameter is also not used because we can make API calls directly to MEXC, as opposed to using a 
+        middle-man like IBKR.
+        """
+        logging.info(f"Placing MEXC order for {ticker} with {contracts} contracts")
+        if not self._api_ping():
+            logging.error(f"MEXC API is not available")
+            raise ValueError(f"MEXC API is not available")
+        
+        return self._place_advanced_order(
+            ticker=ticker, 
+            contracts=contracts, 
+            limit_price=None, 
+            take_profit=take_profit, 
+            stop_loss=stop_loss, 
+            action="BUY",
+            dry_run=False
+        )
+    
+    def _cfg_api_key(self) -> str:
+        api_key = os.environ[MEXC_ENV_API_KEY()]
+        if api_key is None or len(api_key) == 0:
+            raise ValueError(f"{MEXC_ENV_API_KEY()} cannot be None")
+        return api_key
+    
+    def _cfg_api_secret(self) -> str:
+        api_secret = os.environ[MEXC_ENV_API_SECRET()]
+        if api_secret is None or len(api_secret) == 0:
+            raise ValueError(f"{MEXC_ENV_API_SECRET()} cannot be None")
+        return api_secret
+
+    def _cfg_api_endpoint(self) -> str:
+        return MEXC_API_ENDPOINT()
+
+    def _cfg_recv_window_ms(self) -> int:
+        return MEXC_API_RECEIVE_WINDOW_MILLIS()
+    
+    def _request_headers(self) -> dict:
+        return {
+            "Content-Type": "application/json",
+            "X-MEXC-APIKEY": self._cfg_api_key()
+        }
+
+    def _sign(self, params: dict) -> str:
+        query_string = urlencode(params, doseq=True)
+        return hmac.new(
+            self._cfg_api_secret().encode("utf-8"),
+            query_string.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+
+    def _api_ping(self) -> bool:
+        url = f"{self._cfg_api_endpoint()}/api/v3/ping"
+        response = requests.get(url)
+        return response.status_code == 200
+    
+    def _api_get_current_prices(self, symbols: list) -> dict:
+        url = f"{self._cfg_api_endpoint()}/api/v3/ticker/price"
+        response = requests.get(url)
+        all_prices = response.json()
+        symbol_set = set(symbols)
+        filtered_prices = [price for price in all_prices if price["symbol"] in symbol_set]
+        return filtered_prices
+
+    def _api_get_server_time(self) -> str:
+        url = f"{self._cfg_api_endpoint()}/api/v3/time"
+        response = requests.get(url)
+        if response.status_code != 200:
+            logging.error(f"Failed to get server time: {response.status_code} - {response.text}")
+            raise ValueError(f"Failed to get server time: {response.status_code} - {response.text}")
+        response = response.json()
+        logging.info(f"Server time (response): {response}")
+        if "serverTime" not in response:
+            logging.error(f"Failed to get server time")
+            raise ValueError(f"Failed to get server time")
+        return response["serverTime"]
+    
+    def _api_stop_limit(self, ticker: str, exit_side: str, quantity: float, price: float, trigger_price: float, order_id: str) -> dict:
+        params = self._create_order_params(
+            ticker=ticker,
+            action=exit_side,
+            order_type="LIMIT",
+            contracts=quantity,
+            target_price=price,
+            stop_price=trigger_price,
+            tracking_id=order_id
+        )
+        return self._api_place_order(params, dry_run=False)
+    
+    def _api_get_account_info(self) -> dict:
+        """ NOTE
+        This requires special permissions in the MEXC token. 
+        """
+        base_url = self._cfg_api_endpoint()
+        endpoint = "/api/v3/account"
+        """ NOTE
+        unix_timestamp() was out of sync with the MEXC server and it was getting rejected.
+        Check on this later as we don't want to get throttled by the API for too many calls.
+        For now just use remote server time.
+        """
+        remote_server_time = self._api_get_server_time()
+        params = {
+            "timestamp": remote_server_time,
+            "recvWindow": self._cfg_recv_window_ms()
+        }
+        params["signature"] = self._sign(params)
+        headers = self._request_headers()
+        response = requests.get(f"{base_url}{endpoint}", headers=headers, params=params)
+        logging.info(f"Get account info (response): {response.status_code} - {response.text}")
+        if response.status_code != 200:
+            logging.error(f"Failed to get account info: {response.status_code} - {response.text}")
+            raise ValueError(f"Failed to get account info: {response.status_code} - {response.text}")
+        return response.json()
+    
+    def _api_get_order(self, symbol: str, order_id: str) -> dict:
+        base_url = self._cfg_api_endpoint()
+        endpoint = "/api/v3/order"
+        """ NOTE
+        unix_timestamp() was out of sync with the MEXC server and it was getting rejected.
+        Check on this later as we don't want to get throttled by the API for too many calls.
+        For now just use remote server time.
+        """
+        remote_server_time = self._api_get_server_time()
+        params = {
+            "symbol": symbol,
+            "orderId": order_id,
+            "timestamp": remote_server_time,
+            "recvWindow": self._cfg_recv_window_ms()
+        }
+        params["signature"] = self._sign(params)
+        headers = self._request_headers()
+        response = requests.get(f"{base_url}{endpoint}", headers=headers, params=params)
+        logging.info(f"Get order status (response): {response.status_code} - {response.text}")
+        if response.status_code != 200:
+            logging.error(f"Failed to get order status: {response.status_code} - {response.text}")
+            raise ValueError(f"Failed to get order status: {response.status_code} - {response.text}")
+        return response.json()
+
+    def _api_get_orders(self, symbol: str) -> dict:
+        base_url = self._cfg_api_endpoint()
+        endpoint = "/api/v3/allOrders"
+        """ NOTE
+        unix_timestamp() was out of sync with the MEXC server and it was getting rejected.
+        Check on this later as we don't want to get throttled by the API for too many calls.
+        For now just use remote server time.
+        """
+        remote_server_time = self._api_get_server_time()
+        params = {
+            "symbol": symbol,
+            "timestamp": remote_server_time,
+            "recvWindow": self._cfg_recv_window_ms()
+        }
+        params["signature"] = self._sign(params)
+        headers = self._request_headers()
+        response = requests.get(f"{base_url}{endpoint}", headers=headers, params=params)
+        logging.info(f"Get order (response): {response.status_code} - {response.text}")
+        if response.status_code != 200:
+            logging.error(f"Failed to get orders: {response.status_code} - {response.text}")
+            raise ValueError(f"Failed to get orders: {response.status_code} - {response.text}")
+        return response.json()
+    
+    def _api_cancel_all_orders(self, symbol: str) -> dict:
+        base_url = self._cfg_api_endpoint()
+        endpoint = "/api/v3/openOrders"        
+        server_time = self._api_get_server_time()
+        
+        params = {
+            "symbol": symbol,
+            "timestamp": server_time,
+            "recvWindow": self._cfg_recv_window_ms()
+        }
+        params["signature"] = self._sign(params)
+
+        headers = self._request_headers()
+
+        response = requests.delete(f"{base_url}{endpoint}", headers=headers, params=params)
+        logging.info(f"Delete (response): {response.text}")
+        
+        if response.status_code == 404:
+            logging.warning(f"Orders were not found for {symbol} : {response.text}")
+        if response.status_code != 200:
+            logging.error(f"Failed to cancel all orders: {response.text}")
+            raise ValueError(f"Failed to cancel all orders: {response.text}")
+        return response
+
+    def _create_order_params(self, ticker: str, action: str, order_type: str, contracts: float, target_price: float = None, stop_price: float = None, tracking_id: str = None) -> dict:
+        action = action.upper()
+        order_type = order_type.upper()
+        if action not in ["BUY", "SELL"]:
+            raise ValueError(f"Invalid action: {action}")
+        if order_type not in ["LIMIT", "MARKET"]:
+            raise ValueError(f"Invalid order type: {order_type}")
+        if contracts <= 0.0:
+            raise ValueError(f"Invalid number of contracts: {contracts}")
+        if target_price is not None and target_price <= 0.0:
+            raise ValueError(f"Invalid target price: {target_price}")
+        if tracking_id is None or len(tracking_id) == 0:
+            raise ValueError(f"Invalid tracking ID: {tracking_id}")
+        
+        params = { 
+            "symbol": ticker,
+            "side": action,
+            "type": order_type,
+            "quantity": str(contracts),
+            "timestamp": self._api_get_server_time(),
+            "recvWindow": self._cfg_recv_window_ms(),
+            "newClientOrderId": f"{ticker}_{unix_timestamp()}" if tracking_id is None else tracking_id,
+        }
+            
+        if order_type in ["LIMIT"]:
+            if target_price is None:
+                raise ValueError(f"Invalid target price: {target_price}")
+            params["timeInForce"] = "GTC"
+            params["price"] = f"{target_price:.8f}"
+            if stop_price is not None:
+                params["stopPrice"] = f"{stop_price:.8f}"
+
+        params["signature"] = self._sign(params)
+        
+        return params
+
+    def _api_place_order(self, params: dict, dry_run: bool = True) -> dict:
+        logging.debug("_place_order")
+        base_url = self._cfg_api_endpoint()
+        order_endpoint = "/api/v3/order/test" if dry_run else "/api/v3/order"
+        ticker = params["symbol"]
+        quantity = params["quantity"]
+        order_type = params["type"]
+
+        headers = self._request_headers()
+
+        logging.info(f"Placing {order_type} order for {ticker} with {quantity}. Parameters are: {params}")
+
+        response = requests.post(f"{base_url}{order_endpoint}", headers=headers, params=params)
+        
+        logging.info(f"API response: {response.status_code} - {response.text}")
+
+        if response.status_code != 200:
+            logging.error(f"Error placing market order: {response.status_code} - {response.text}")
+            raise ValueError(f"Error placing market order: {response.status_code} - {response.text}")
+
+        return response.json()
+    
+    def _place_advanced_order(self, ticker: str, action: str, contracts: float, limit_price: float, stop_loss: float, stop_loss_trigger: float, take_profit: float, take_profit_trigger: float, dry_run: bool = True) -> dict:
+        logging.debug("_place_advanced_order")
+        market_order_id = f"{ticker}_{unix_timestamp()}"
+        market_order_params = self._create_order_params(
+            ticker=ticker, 
+            action=action, 
+            order_type="MARKET", 
+            contracts=contracts, 
+            tracking_id=market_order_id
+        )        
+        market_order = self._api_place_order(market_order_params, dry_run)
+        market_order = self._api_get_order(ticker, market_order["orderId"])
+        
+        """ NOTE
+        the executed quantity is seldom the contracts amount when placing market orders. 
+        The only way to know the actual amount is to query the order.
+        """
+        executed_qty = contracts
+        if "executedQty" not in market_order:
+            logging.warning(f"executedQty key not found in order response, will default to {contracts}. Order response: {market_order}")
+        else:
+            executed_qty = float(market_order.get("executedQty"))
+
+        exit_side = "SELL" if action.upper() == "BUY" else "BUY"
+
+        """ NOTE
+        At this point our market order is likely filled, so we need to decide what to do if TP and SL orders fail. 
+        Again - this is due to the API limitation of not using OCO orders.
+        Option 1 - Sell right away at a potential small loss
+        Option 2 - Leave the market order open and retry.
+        
+        Currently will do the following
+        1. Attempt to place a stop loss order
+        2. If it fails, pause for a bit
+        3. Retry order again
+        4. If it fails, sell all and exit
+        """
+        try:
+            stop_loss_order = self._api_stop_limit(
+                ticker=ticker,
+                exit_side=exit_side,
+                price=stop_loss,
+                trigger_price=stop_loss_trigger,
+                quantity=executed_qty,
+                order_id=f"{market_order_id}_s"
+            )
+
+        # stop_loss_order_id = f"{market_order_id}_s"
+        # stop_loss_params = self._create_order_params(
+        #     ticker=ticker,
+        #     action=exit_side,
+        #     order_type="STOP_LIMIT",
+        #     stop_price=stop_loss_trigger,
+        #     contracts=executed_qty,
+        #     target_price=stop_loss,
+        #     tracking_id=stop_loss_order_id
+        # )
+
+        # stop_loss_order = None
+        # try:
+        #     stop_loss_order = self._api_place_order(stop_loss_params, dry_run)
+        except Exception as e:
+            logging.warning(f"Error placing stop loss order: {e}.", stack_info=True)
+            pause_period_seconds = 15
+            logging.info(f"Pausing for {pause_period_seconds} second(s) before retrying the stop loss order")
+            time.sleep(pause_period_seconds)
+            try:
+                stop_loss_order = self._api_stop_limit(
+                    ticker=ticker,
+                    exit_side=exit_side,
+                    price=stop_loss,
+                    trigger_price=stop_loss_trigger,
+                    quantity=executed_qty,
+                    order_id=f"{market_order_id}_s2"
+                )
+            except Exception as e:
+                logging.error(f"Retry failed when placing stop loss order: {e}. Sell {executed_qty} for {ticker} immediately")
+                params = self._create_order_params(
+                    ticker=ticker,
+                    action=exit_side,
+                    order_type="MARKET",
+                    contracts=executed_qty,
+                    tracking_id=f"{market_order_id}_s_err"
+                )
+                self._api_place_order(params, dry_run)
+                raise e
+
+        """NOTE
+        For take profit, dont bother with the retry logic. Just try once and if it fails, sell all and exit.
+        Also remebering to cancel the stop order.
+        """
+        try:
+            take_profit_order = self._api_stop_limit(
+                ticker=ticker,
+                exit_side=exit_side,
+                price=take_profit,
+                trigger_price=take_profit_trigger,
+                quantity=executed_qty,
+                order_id=f"{market_order_id}_t"
+            )
+        # take_profit_order_id = f"{market_order_id}_t"
+        # take_profit_params = self._create_order_params(
+        #     ticker=ticker, 
+        #     action=exit_side, 
+        #     order_type="STOP_LIMIT", 
+        #     contracts=executed_qty,
+        #     stop_price=take_profit_trigger, 
+        #     target_price=take_profit, 
+        #     tracking_id=take_profit_order_id
+        # )
+        # try:
+        #     take_profit_order = self._api_place_order(take_profit_params, dry_run)
+        except Exception as e:
+            logging.error(f"Error placing take profit order: {e}. Sell {executed_qty} for {ticker} immediately")
+            params = self._create_order_params(
+                ticker=ticker,
+                action=exit_side,
+                order_type="MARKET",
+                contracts=executed_qty,
+                target_price=None,
+                tracking_id=f"{market_order_id}_t_err"
+            )
+            self._api_place_order(params, dry_run)
+            self._api_cancel_all_orders(ticker)
+            raise e
+
+        return {
+            "market_order": market_order,
+            "take_profit_order": take_profit_order,
+            "stop_loss_order": stop_loss_order
+        }
+
+
 #####################################
 #####################################
 ### Merchant 
 #####################################
 #####################################
-
-def M_CFG_HIGH_INTERVAL():
-    return "MERCHANT_HIGH_INTERVAL"
-
-def M_CFG_LOW_INTERVAL():
-    return "MERCHANT_LOW_INTERVAL"
 
 def S_ACTION_BUY():
     return "buy"
@@ -338,12 +815,6 @@ def M_STATE_KEY_TAKEPROFIT_PERCENT():
 def M_STATE_KEY_MERCHANT_ID():
     return "merchant_id"
 
-def M_BIAS_BULLISH():
-    return "bullish"
-
-def M_BIAS_BEARISH():
-    return "bearish"
-
 ##
 # Keys found in the trading view alerts JSON
 
@@ -361,6 +832,7 @@ class MerchantSignal:
         self.flowmerchant = msg_body.get("flowmerchant", {})
         self._notes = msg_body.get("notes", "")
         self.TABLE_NAME = "flowmerchant"
+        self.__id = str(uuid.uuid4())
 
     @staticmethod
     def parse(msg_body):
@@ -424,15 +896,23 @@ class MerchantSignal:
             logging.error(f"Price values must be numbers: {e}")
             raise ValueError("Price values must be numbers")
 
-        if not isinstance(security["contracts"], int):
-            logging.error(f"Contracts must be an integer: {security['contracts']}")
-            raise ValueError("Contracts must be an integer")
+        if not isinstance(security["contracts"], float):
+            if not isinstance(security["contracts"], int):
+                logging.error(f"Contracts must be numeric: {security['contracts']}")
+                raise ValueError("Contracts must be numeric")
+        
+        if security["contracts"] <= 0.0:
+            logging.error(f"Contracts must be greater than 0: {security['contracts']}")
+            raise ValueError("Contracts must be greater than 0")
 
+        if not isinstance(flowmerchant["version"], int):
+            logging.error(f"Version must be an integer: {flowmerchant['version']}")
+            raise ValueError("Version must be an integer")
+        
         try:
             float(flowmerchant["suggested_stoploss"])
             float(flowmerchant["takeprofit_percent"])
             int(flowmerchant["rest_interval_minutes"])
-            int(flowmerchant["version"])
         except ValueError as e:
             logging.error(f"Flowmerchant values must be numbers: {e}")
             raise ValueError("Flowmerchant values must be numbers")
@@ -440,69 +920,77 @@ class MerchantSignal:
         return MerchantSignal(msg_body)
 
     # Accessor methods for metadata
-    def api_token(self):
+    def api_token(self) -> str:
         return self.metadata.get("key")
 
     # Accessor methods for security
-    def ticker(self):
+    def ticker(self) -> str:
         return self.security.get("ticker")
 
-    def exchange(self):
+    def exchange(self) -> str:
         return self.security.get("exchange")
 
-    def security_type(self):
+    def security_type(self) -> str:
         return self.security.get("type")
 
-    def contracts(self):
+    def contracts(self) -> int:
         return self.security.get("contracts")
 
-    def interval(self):
+    def interval(self) -> str:
         return self.security.get("interval")
 
-    def high(self):
+    def high(self) -> float:
         return float(self.security["price"].get("high"))
 
-    def low(self):
+    def low(self) -> float:
         return float(self.security["price"].get("low"))
 
-    def open(self):
+    def open(self) -> float:
         return float(self.security["price"].get("open"))
 
-    def close(self):
+    def close(self) -> float:
         return float(self.security["price"].get("close"))
 
     # Accessor methods for flowmerchant
-    def suggested_stoploss(self):
+    def suggested_stoploss(self) -> float:
         return float(self.flowmerchant.get("suggested_stoploss"))
 
-    def takeprofit_percent(self):
+    def takeprofit_percent(self) -> float:
         return float(self.flowmerchant.get("takeprofit_percent"))
 
-    def rest_interval(self):
+    def rest_interval(self) -> int:
         return int(self.flowmerchant.get("rest_interval_minutes"))
 
-    def version(self):
+    def version(self) -> int:
         return int(self.flowmerchant.get("version"))
 
-    def action(self):
+    def action(self) -> str:
         return self.flowmerchant.get("action")
     
-    def low_interval(self):
+    def low_interval(self) -> str:
         return self.flowmerchant.get("low_interval")
     
-    def high_interval(self):
+    def high_interval(self) -> str:
         return self.flowmerchant.get("high_interval")
 
     def rest_after_buy(self) -> bool:
-        if "rest_after_buy" in self.flowmerchant:
-            return bool(self.flowmerchant.get("rest_after_buy"))
-        return False
-
-    def notes(self):
+        self.flowmerchant.get("rest_after_buy", False)
+        
+    def dry_run(self) -> bool:
+        return bool(self.flowmerchant.get("dry_run", False))
+        
+    def notes(self) -> str:
         return self._notes
+    
+    def id(self) -> str:
+        return self.__id
+
+    def broker_params(self) -> dict:
+        return self.flowmerchant.get("broker_params", {})
 
     def __str__(self) -> str:
         return (
+            f"MerchantSignal(id={self.id()}, "
             f"action={self.action()}, "
             f"ticker={self.ticker()}, "
             f"close={self.close()}, "
@@ -514,6 +1002,9 @@ class MerchantSignal:
             f"contracts={self.contracts()}, "
             f"version={self.version()}, "
             f"rest_interval={self.rest_interval()}"
+            f"rest_after_buy={self.rest_after_buy()}, "
+            f"notes={self.notes()}"
+            f")"
         )
 
     def info(self) -> str:
@@ -524,8 +1015,7 @@ class MerchantSignal:
 
 class Merchant:
 
-    def __init__(self, table_service: TableServiceClient, broker: MarketOrderable, events_logger: EventLoggable) -> None:
-        logging.debug(f"Merchant()")
+    def __init__(self, table_service: TableServiceClient, broker: OrderCapable, events_logger: EventLoggable) -> None:
         if table_service is None:
             raise ValueError("TableService cannot be null")
         if broker is None:
@@ -589,10 +1079,10 @@ class Merchant:
                 self._happily_say(self.get_merchant_id(signal), f"I'm the new guy! Time to go shopping for {signal.ticker()}")
 
     def load_config_from_env(self) -> None:
-        """
+        """ NOTE
         currently no properties that need to be loaded from env. 
         env loaded config would be global to all merchant instances.
-        so preferrable to config from the signal, unless there are security implications
+        so preferrable to put config in the signal, unless there are security implications
         """
         logging.debug(f"load_config_from_env()")
 
@@ -721,23 +1211,34 @@ class Merchant:
             return signal.close() - (signal.close() * signal.suggested_stoploss())
 
         def safety_check(close, take_profit, stop_loss, quantity) -> None:
-            if signal.close() < stop_loss:
-                raise ValueError(f"Close price {signal.close()} is less than suggested stoploss {stop_loss}")
-            if signal.close() > take_profit:
-                raise ValueError(f"Close price {signal.close()} is greater than take profit {take_profit}")
+            if close < 0.0:
+                raise ValueError(f"Close price {close} is less than 0.0")
+            if take_profit < 0.0:
+                raise ValueError(f"Take profit {take_profit} is less than 0.0")
+            if stop_loss < 0.0:
+                raise ValueError(f"Stop loss {stop_loss} is less than 0.0")
+            if quantity <= 0.0:
+                raise ValueError(f"Quantity {quantity} is less than or eq 0")
+            if close < stop_loss:
+                raise ValueError(f"Close price {close} is less than suggested stoploss {stop_loss}")
+            if close > take_profit:
+                raise ValueError(f"Close price {close} is greater than take profit {take_profit}")
 
         limit = signal.close()
         take_profit = calculate_take_profit(signal)
         stop_loss = calculate_stop_loss(signal)
         quantity = signal.contracts()
         safety_check(signal.close(), take_profit, stop_loss, quantity)
-        result = self.broker.place_buy_market_order(
+        
+        execute_order = self.broker.place_test_order if signal.dry_run() else self.broker.place_limit_order
+        result = execute_order(
             source=self.get_merchant_id(signal), 
             ticker=signal.ticker(), 
             contracts=signal.contracts(),
             limit=limit,
             take_profit=take_profit, 
-            stop_loss=stop_loss
+            stop_loss=stop_loss,
+            broker_params=signal.broker_params()
         )
         self._happily_say(self.get_merchant_id(signal), f"Will send the following order info to the broker: {result}")
         
@@ -795,143 +1296,8 @@ class TestFlowMerchant(unittest.TestCase):
     def setUp(self):
         pass
 
-    def create_state(self, id, version, action, ticker, close, suggested_stoploss, high, low, takeprofit_percent, status, high_interval, low_interval):
-        return {
-            M_STATE_KEY_ID(): id,
-            M_STATE_KEY_VERSION(): version,
-            M_STATE_KEY_ACTION(): action,
-            M_STATE_KEY_TICKER(): ticker,
-            M_STATE_KEY_CLOSE(): close,
-            M_STATE_KEY_SUGGESTED_STOPLOSS(): suggested_stoploss,
-            M_STATE_KEY_HIGH(): high,
-            M_STATE_KEY_LOW(): low,
-            M_STATE_KEY_TAKEPROFIT_PERCENT(): takeprofit_percent,
-            M_STATE_KEY_STATUS(): status,
-            M_STATE_KEY_HIGH_INTERVAL(): high_interval,
-            M_STATE_KEY_LOW_INTERVAL(): low_interval
-        }
-
-    def test_merchant_e2e(self):
-        table_client_mock = Mock()        
-        table_client_mock.query_entities.return_value = [ ]
-        broker_mock = Mock()
-        
-        # Optionally, you can verify it was called with specific arguments
-        # table_client_mock.query_entities.assert_called_with(some_arg1, some_arg2)
-
-        # If you want to check how many times it was called
-        # self.assertEqual(table_client_mock.query_entities.call_count, 1)
-        signal_data = """
-        {
-            "action" : "buy",
-            "ticker" : "AAPL",
-            "key" : "STOCKTON_KEY",
-            "notes" : "ver=20240922;high=105.0;low=95.0;exchange=NASDAQ;open=98.0;interval=1h;high_interval=1h;low_interval=1m;suggested_stoploss=0.05;takeprofit_percent=0.05;rest_interval=3000",
-            "close" : 103.0,
-            "contracts" : 1
-        }
-        """
-        first_signal = MerchantSignal(json.loads(signal_data))
-        flow_merchant = Merchant(table_client_mock, broker=broker_mock)
-        flow_merchant.handle_market_signal(first_signal)
-
-        table_client_mock.create_table_if_not_exists.assert_called()
-        table_client_mock.query_entities.assert_called()
-
-        assert flow_merchant.status() == M_STATE_BUYING()
-        assert flow_merchant.last_action_time() > 0
-        assert flow_merchant.high_interval() == "1h"
-        assert flow_merchant.low_interval() == "1m"
-
-        second_signal_data = """
-        {
-            "action" : "buy",
-            "ticker" : "AAPL",
-            "key" : "STOCKTON_KEY",
-            "notes" : "ver=20240922;high=105.0;low=95.0;exchange=NASDAQ;open=98.0;interval=1m;high_interval=1h;low_interval=1m;suggested_stoploss=0.05;takeprofit_percent=0.05;rest_interval=3000",
-            "close" : 103.0,
-            "contracts" : 1
-        }
-        """
-        
-        table_client_mock.query_entities.return_value = [
-            {
-                'PartitionKey': 'AAPL-1m', 
-                'RowKey': unix_timestamp(), 
-                'position_data': '{}', 
-                'status': 'buying', 
-                'merchant_lastaction_time': 1726990626, 
-                'ticker': 'AAPL', 
-                'high_interval': '1h', 
-                'low_interval': '1m'
-            }
-        ]
-        print(flow_merchant.state)
-        second_signal = MerchantSignal(json.loads(second_signal_data))
-        flow_merchant.handle_market_signal(second_signal)
-        print(flow_merchant.state)
-
-        assert flow_merchant.status() == M_STATE_SELLING()
-
-
-        third_signal_data = """
-        {
-            "action" : "buy",
-            "ticker" : "AAPL",
-            "key" : "STOCKTON_KEY",
-            "notes" : "ver=20240922;high=105.0;low=95.0;exchange=NASDAQ;open=98.0;interval=1m;high_interval=1h;low_interval=1m;suggested_stoploss=0.05;takeprofit_percent=0.05;rest_interval=3000",
-            "close" : 103.0,
-            "contracts" : 1
-        }
-        """
-
-        table_client_mock.query_entities.return_value = [
-            {
-                'PartitionKey': 'AAPL-1m', 
-                'RowKey': unix_timestamp(), 
-                'position_data': '{}', 
-                'status': 'selling', 
-                'merchant_lastaction_time': 1727000626, 
-                'ticker': 'AAPL', 
-                'high_interval': '1h', 
-                'low_interval': '1m'
-            }
-        ]
-
-        third_signal = MerchantSignal(json.loads(third_signal_data))
-        flow_merchant.handle_market_signal(third_signal)
-        
-        assert flow_merchant.status() == M_STATE_SELLING()
-
-        forth_signal_data = """
-        {
-            "action" : "sell",
-            "ticker" : "AAPL",
-            "key" : "STOCKTON_KEY",
-            "notes" : "ver=20240922;high=105.0;low=95.0;exchange=NASDAQ;open=98.0;interval=1m;high_interval=1h;low_interval=1m;suggested_stoploss=0.05;takeprofit_percent=0.05;rest_interval=3000",
-            "close" : 103.0,
-            "contracts" : 1
-        }
-        """
-
-        table_client_mock.query_entities.return_value = [
-            {
-                'PartitionKey': 'AAPL-1m', 
-                'RowKey': unix_timestamp(), 
-                'position_data': '{}', 
-                'status': 'selling', 
-                'merchant_lastaction_time': 1727000626, 
-                'ticker': 'AAPL', 
-                'high_interval': '1h', 
-                'low_interval': '1m'
-            }
-        ]
-
-        forth_signal = MerchantSignal(json.loads(forth_signal_data))
-        flow_merchant.handle_market_signal(forth_signal)
-        
-        assert flow_merchant.status() == M_STATE_RESTING()
-
+    def tearDown(self):
+        pass
 
 if __name__ == '__main__':
     unittest.main()

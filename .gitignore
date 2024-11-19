@@ -45,6 +45,7 @@ venv.bak/
 __pycache__/
 *.py[cod]
 *$py.class
+.alerts
 
 # Azurite artifacts
 __blobstorage__
