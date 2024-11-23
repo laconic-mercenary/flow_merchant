@@ -113,35 +113,38 @@ class Merchant:
     def check_positions(self) -> dict:
         logging.debug(f"_check_positions()")
         start_time_ms = unix_timestamp_ms()
-        ## create thread pool
-        ## get all stored positions
         if not isinstance(self.broker, LiveCapable):
             logging.warning("Broker is not LiveCapable - will skip checking positions")
             return { }
         
-        positions = self._query_current_positions()
-        logging.info(f"Will check the following positions {positions}")
+        current_positions = self._query_current_positions()
+        logging.info(f"Will check the following positions {current_positions}")
 
         """ NOTE
         it is easier to just get all the prices up front than query individually
         This will save API calls as well. 
         """
-        tickers = [ position[M_STATE_KEY_TICKER()] for position in positions if M_STATE_KEY_TICKER() in position ]
+        tickers = [ position[M_STATE_KEY_TICKER()] for position in current_positions if M_STATE_KEY_TICKER() in position ]
         current_prices = self.broker.get_current_prices(symbols=tickers)
         
-        profitable_check_results = self._check_profitable_positions(positions=positions, current_prices=current_prices)
+        profitable_check_results = self._check_profitable_positions(positions=current_positions, current_prices=current_prices)
 
         """ TODO
+        Need a way to get rid of old stored positions. 
+        TAKE PROFIT - simple, just delete here.
+        STOP LOSS - tricky because these are limit orders.. conisder:
         go through all stop loss limit orders and if they are FILLED, then they 
         triggered the stop loss. Delete the entries from the table service.
         """
 
         return {
             "tickers": tickers,
-            "current_positions": profitable_check_results
+            "current_positions": profitable_check_results,
+            "elapsed_ms": unix_timestamp_ms() - start_time_ms
         }
     
     def _check_profitable_positions(self, positions: list, current_prices: dict) -> dict:
+        logging.debug("_check_profitable_positions()")
         laggards = []
         winners = []
         leaders = []
@@ -189,13 +192,12 @@ class Merchant:
             else:
                 if current_price >= take_profit:
                     winners.append(order_data)
-                    stoploss_order_id = order_data["orders"]["stop_loss"].get("id")
-                    """ TODO - use the batchOrder instead to avoid API limits, but it would be broker specific... """
-                    logging.info(f"Take profit reached for {order_ticker} - will cancel the stop loss order and SELL {order_contracts} of the asset")
-                    cancel_result = self.broker.cancel_order(ticker=order_ticker, order_id=stoploss_order_id)
-                    """ TODO - if this fails then we are in trouble because our stop loss is gone, consider a retry mechanism """
-                    sell_result = self.broker.place_sell_order(ticker=order_ticker, contracts=order_contracts)
-                    logging.info(f"Results: cancel order - {cancel_result}, sell result - {sell_result}")
+                    self._handle_take_profit(
+                        position=position,
+                        order_data=order_data,
+                        ticker=order_ticker,
+                        contracts=order_contracts
+                    )
                 else:
                     leaders.append(order_data)
 
@@ -212,6 +214,27 @@ class Merchant:
     def _query_current_positions(self) -> list: 
         table_client = self.table_service.get_table_client(table_name=self.TABLE_NAME)
         return list(table_client.list_entities())
+
+    def _handle_take_profit(self, position:dict, order_data:dict, ticker:str, contracts:float) -> None:
+        stoploss_order_id = order_data["orders"]["stop_loss"].get("id")
+        """ TODO - use the batchOrder instead to avoid API limits, but it would be broker specific... """
+        logging.info(f"Take profit reached for {ticker} - will cancel the stop loss order and SELL {contracts} of the asset")
+        cancel_result = self.broker.cancel_order(ticker=ticker, order_id=stoploss_order_id)
+        """ TODO - if this fails then we are in trouble because our stop loss is gone, consider a retry mechanism """
+        sell_result = self.broker.place_sell_order(ticker=ticker, contracts=contracts)
+        self._delete_stored_position(stored_position=position)
+        logging.info(f"Results: cancel order - {cancel_result}, sell result - {sell_result}")
+                
+    def _delete_stored_position(self, stored_position:dict) -> None:
+        if M_STATE_KEY_ROWKEY() not in stored_position:
+            raise ValueError(f"expected {M_STATE_KEY_ROWKEY()} in {stored_position}")
+        if M_STATE_KEY_PARTITIONKEY() not in stored_position:
+            raise ValueError(f"expected {M_STATE_KEY_PARTITIONKEY()} in {stored_position}")
+        table_client = self.table_service.get_table_client(table_name=self.TABLE_NAME)
+        table_client.delete_entity(
+            partition_key=stored_position[M_STATE_KEY_PARTITIONKEY()],
+            row_key=stored_position[M_STATE_KEY_ROWKEY()]
+        )
     
     # def _create_worker_pool(self) -> concurrent.futures.ThreadPoolExecutor:
     #     max_worker_count = min(os.cpu_count() * 2, 10)
