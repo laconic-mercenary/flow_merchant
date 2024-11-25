@@ -18,7 +18,7 @@ def DISCORD_COLOR_BLUE():
     return 3447003
 
 class DiscordClient(EventLoggable):
-    def __init__(self, disabled=True):
+    def __init__(self, disabled=False):
         self.base_url = os.environ[DISCORD_ENV_WEBHOOK_URL()]
         self.__disabled = disabled
 

@@ -1,7 +1,7 @@
-import concurrent.futures
+import copy
 import json
 import logging
-import os
+import eventkit
 
 from azure.data.tables import TableServiceClient
 
@@ -92,6 +92,9 @@ def M_STATE_KEY_MERCHANT_ID():
 def M_STATE_KEY_BROKER_DATA():
     return "broker_data"
 
+def TABLE_NAME():
+    return "flowmerchant"
+
 class Merchant:
 
     def __init__(self, table_service: TableServiceClient, broker: OrderCapable, events_logger: EventLoggable) -> None:
@@ -101,12 +104,20 @@ class Merchant:
             raise ValueError("Broker cannot be null")
         if events_logger is None:
             raise ValueError("EventsLogger cannot be null")
+        
+        self._id = None
         self.state = None
         self.table_service = table_service
         self.broker = broker
         self.events_logger = events_logger
-        self.TABLE_NAME = "flowmerchant"
+        
+        self.TABLE_NAME = TABLE_NAME()
         table_service.create_table_if_not_exists(table_name=self.TABLE_NAME)
+
+        self.on_signal_received = eventkit.Event("on_signal_received")
+        self.on_state_change = eventkit.Event("on_state_change")
+        self.on_order_placed = eventkit.Event("on_order_placed")
+        self.on_positions_check = eventkit.Event("on_positions_check")
 
     ### Positions
 
@@ -127,7 +138,7 @@ class Merchant:
         tickers = [ position[M_STATE_KEY_TICKER()] for position in current_positions if M_STATE_KEY_TICKER() in position ]
         current_prices = self.broker.get_current_prices(symbols=tickers)
         
-        profitable_check_results = self._check_profitable_positions(positions=current_positions, current_prices=current_prices)
+        check_results = self._check_profitable_positions(positions=current_positions, current_prices=current_prices)
 
         """ TODO
         Need a way to get rid of old stored positions. 
@@ -137,11 +148,15 @@ class Merchant:
         triggered the stop loss. Delete the entries from the table service.
         """
 
-        return {
+        results = {
             "tickers": tickers,
-            "current_positions": profitable_check_results,
+            "current_positions": check_results,
             "elapsed_ms": unix_timestamp_ms() - start_time_ms
         }
+
+        self.on_positions_check.emit(results)
+
+        return results
     
     def _check_profitable_positions(self, positions: list, current_prices: dict) -> dict:
         logging.debug("_check_profitable_positions()")
@@ -168,6 +183,7 @@ class Merchant:
             
             main_order_id = order_data["orders"]["main"].get("id")
             """ TODO - see if there is a way to get all orders in one call, then filter """
+            ### BROKER call
             main_order = self.broker.get_order(ticker=order_ticker, order_id=main_order_id)
             if not main_order.get("ready"):
                 """ TODO - this is problematic but may be ok to just wait to the next round
@@ -242,86 +258,41 @@ class Merchant:
     #         max_workers=max_worker_count,
     #         thread_name_prefix="FlowMerc"
     #     )
-
-    # def _position_check_fn(self) -> callable:
-    #     def perform_position_check(_stored_position: dict, _current_prices: dict) -> None:
-    #         logging.info(f"performing position check for {_stored_position}...")
-
-    #         if M_STATE_KEY_TICKER() not in _stored_position:
-    #             _msg = f"ticker key is required for the stored position {_stored_position}"
-    #             logging.error(_msg)
-    #             raise ValueError(_msg)
-            
-    #         _ticker = _stored_position.get(M_STATE_KEY_TICKER())
-    #         if M_STATE_KEY_BROKER_DATA() not in _stored_position:
-    #             _msg = f"broker data was not set on the stored position for ticker {_ticker}"
-    #             logging.error(_msg)
-    #             raise ValueError(_msg)
-            
-    #         if M_STATE_KEY_CLOSE() not in _stored_position:
-    #             _msg = f"close key was not set on the stored position for ticker {_ticker}"
-    #             logging.error(_msg)
-    #             raise ValueError(_msg)
-            
-    #         _take_profit = self._calc_take_profit(_stored_position)
-    #         _current_price = _current_prices.get(_ticker)
-
-    #         logging.debug(f"ticker {_ticker}, state {_stored_position}, take profit {_take_profit}, current price {_current_price}")
-    #         _sell_condition = self._is_sell_condition(_current_price, _take_profit)
-            
-    #         if _sell_condition:
-    #             logging.info(f"Take profit reached for {_ticker} - {_current_price} >= {_take_profit}")
-    #             ## self.broker.sell(ticker, current_price)
-    #             self.events_logger.log_event(f"Take profit reached for {_ticker} - {_current_price} >= {_take_profit}")
-            
-    #         return {
-    #             "current_price": _current_price,
-    #             "take_profit_price": _take_profit,
-    #             "sell": _sell_condition,
-    #             "ticker": _ticker,
-    #             "entry_price": _stored_position.get(M_STATE_KEY_CLOSE())
-    #         }
-    #     return perform_position_check
-    
-    # def _cancel_orders_for_ticker(self, ticker: str) -> dict:
-    #     return self.broker.cancel_order(ticker)
     
     ### Signals
 
     def handle_market_signal(self, signal: MerchantSignal) -> None:
         logging.debug(f"handle_market_signal() - {signal.id()}")
         logging.info(f"received signal - id={signal.id()} - {signal.info()}")
-        merchant_id = self.get_merchant_id(signal)
-        handled = False
+        self.id(signal)
+        self.on_signal_received.emit(self.id(), signal)
         try:
             self.load_config_from_signal(signal)
             self.load_config_from_env() # env should override signal configs
-            self.load_state_from_storage(merchant_id)
+            self.load_state_from_storage()
             if self.status() == M_STATE_SHOPPING():
-                handled = self._handle_signal_when_shopping(signal)
+                self._handle_signal_when_shopping(signal)
             elif self.status() == M_STATE_BUYING():
-                handled = self._handle_signal_when_buying(signal)
+                self._handle_signal_when_buying(signal)
             elif self.status() == M_STATE_SELLING():
-                handled = self._handle_signal_when_selling(signal)
+                self._handle_signal_when_selling(signal)
             elif self.status() == M_STATE_RESTING():
-                handled = self._handle_signal_when_resting(signal)
+                self._handle_signal_when_resting(signal)
             else:
                 raise ValueError(f"Unknown state {self.status()}")
         finally:
-            if not handled:
-                self._say(merchant_id, f"Nothing for me to do, I'm in {self.state[M_STATE_KEY_STATUS()]} mode")
             logging.info(f"finished handling signal - id={signal.id()}")
     
-    def load_state_from_storage(self, merchant_id: str) -> None:
+    def load_state_from_storage(self) -> None:
         logging.debug(f"load_state_from_storage()")
-        query_filter = f"{M_STATE_KEY_MERCHANT_ID()} eq '{merchant_id}'"
+        query_filter = f"{M_STATE_KEY_MERCHANT_ID()} eq '{self.id()}'"
         table_client = self.table_service.get_table_client(table_name=self.TABLE_NAME)
         rows = list(table_client.query_entities(query_filter))
         if len(rows) > 1:
-            raise ValueError(f"Multiple open merchants found for {merchant_id}")
+            raise ValueError(f"Multiple open merchants found for {self.id()}")
         else:
             if len(rows) == 1:
-                logging.info(f"found existing merchant - id={merchant_id}")
+                logging.info(f"found existing merchant - id={self.id()}")
                 row = rows[0]
                 current_state = row.get(M_STATE_KEY_STATUS())
                 if not current_state in [M_STATE_SHOPPING(), M_STATE_BUYING(), M_STATE_SELLING(), M_STATE_RESTING()]:
@@ -333,11 +304,10 @@ class Merchant:
                 self.state[M_STATE_KEY_VERSION()] = row.get(M_STATE_KEY_VERSION())
                 self.state[M_STATE_KEY_BROKER_DATA()] = row.get(M_STATE_KEY_BROKER_DATA())
             else:
-                logging.info(f"no open merchants found for {merchant_id}, creating new...")
+                logging.info(f"no open merchants found for {self.id()}, creating new...")
                 self.state[M_STATE_KEY_STATUS()] = M_STATE_SHOPPING()
                 self.state[M_STATE_KEY_BROKER_DATA()] = json.dumps({ })
                 table_client.create_entity(entity=self.state)
-                self._happily_say(merchant_id, f"I'm the new guy! Time to go shopping...")
 
     def load_config_from_env(self) -> None:
         """ NOTE
@@ -351,10 +321,10 @@ class Merchant:
         logging.debug(f"load_config_from_signal()")
         if self.state is None:
             self.state = {}
-        self.state[M_STATE_KEY_PARTITIONKEY()] = self.get_merchant_id(signal)
+        self.state[M_STATE_KEY_PARTITIONKEY()] = self.id()
         self.state[M_STATE_KEY_ROWKEY()] = f"{signal.ticker()}-{signal.id()}"
         self.state[M_STATE_KEY_ID()] = signal.id()
-        self.state[M_STATE_KEY_MERCHANT_ID()] = self.get_merchant_id(signal)
+        self.state[M_STATE_KEY_MERCHANT_ID()] = self.id()
         self.state[M_STATE_KEY_VERSION()] = signal.version()
         self.state[M_STATE_KEY_TICKER()] = signal.ticker()
         self.state[M_STATE_KEY_CLOSE()] = signal.close()
@@ -379,13 +349,11 @@ class Merchant:
             logging.warning(f"low and high are the same, going straight to buying")
             self._start_buying()
             self._handle_signal_when_buying(signal)
-            self._say(self.get_merchant_id(signal), f"Without confluence, I'm looking to buy {signal.contracts()} of {signal.ticker()}, will let you know when I make a purchase")
             return True
         else:
             if signal.interval() == self.high_interval():
                 if signal.action() == S_ACTION_BUY():
                     self._start_buying()
-                    self._say(self.get_merchant_id(signal), f"With confluence, I'm looking to buy {signal.contracts()} of {signal.ticker()}, will let you know when I make a purchase")
                     return True
         return False
 
@@ -396,16 +364,15 @@ class Merchant:
                 order_result = self._place_order(signal)
                 """ NOTE  will rely on the sync with storage call to update the state """
                 self.state[M_STATE_KEY_BROKER_DATA()] = json.dumps(order_result)
+                self.on_order_placed.emit(self.id(), order_result)
                 if signal.rest_after_buy():
                     self._start_resting()
                 else:    
                     self._start_selling()
-                self._happily_say(self.get_merchant_id(signal), f"I'm looking to sell my {signal.ticker()}, because I made a purchase!")
                 return True
         elif signal.interval() == self.high_interval():
             if signal.action() == S_ACTION_SELL():
                 self._start_shopping()
-                self._say(self.get_merchant_id(signal), "I'm going shopping - because the high_interval triggered a SELL signal - better safe than sorry")
                 return True
         return False
     
@@ -416,7 +383,6 @@ class Merchant:
         if signal.action() == S_ACTION_SELL():
             ## do nothing - allow take profit and stop loss to trigger
             self._start_resting()
-            self._say(self.get_merchant_id(signal), f"Good night - I'm resting for {signal.rest_interval()} minutes")
             return True
         return False
 
@@ -426,11 +392,9 @@ class Merchant:
         rest_interval_seconds = self.rest_interval_minutes() * 60
         if (now_timestamp_seconds > self.last_action_time() + rest_interval_seconds):
             self._start_shopping()
-            self._happily_say(self.get_merchant_id(signal), "Finished my rest - I am going shopping.")
         else:
             time_left_in_seconds = now_timestamp_seconds - (self.last_action_time() + rest_interval_seconds)
             logging.info(f"Resting for another {time_left_in_seconds} seconds")
-            self._say(self.get_merchant_id(signal), f"I'm resting for another {time_left_in_seconds} seconds")
         return True
 
     def _start_buying(self) -> None:
@@ -438,24 +402,32 @@ class Merchant:
         self.state[M_STATE_KEY_STATUS()] = M_STATE_BUYING()
         self.state[M_STATE_KEY_LAST_ACTION_TIME()] = unix_timestamp_secs()
         self._sync_with_storage()
+        state_copy = copy.deepcopy(self.state)
+        self.on_state_change.emit(self.id(), self.status(), state_copy)
 
     def _start_shopping(self) -> None:
         logging.debug(f"_start_shopping()")
         self.state[M_STATE_KEY_STATUS()] = M_STATE_SHOPPING()
         self.state[M_STATE_KEY_LAST_ACTION_TIME()] = unix_timestamp_secs()
         self._sync_with_storage()
+        state_copy = copy.deepcopy(self.state)
+        self.on_state_change.emit(self.id(), self.status(), state_copy)
 
     def _start_selling(self) -> None:
         logging.debug(f"_start_selling()")
         self.state[M_STATE_KEY_STATUS()] = M_STATE_SELLING()
         self.state[M_STATE_KEY_LAST_ACTION_TIME()] = unix_timestamp_secs()
         self._sync_with_storage()
+        state_copy = copy.deepcopy(self.state)
+        self.on_state_change.emit(self.id(), self.status(), state_copy)
 
     def _start_resting(self) -> None:
         logging.debug(f"_start_resting()")
         self.state[M_STATE_KEY_STATUS()] = M_STATE_RESTING()
         self.state[M_STATE_KEY_LAST_ACTION_TIME()] = unix_timestamp_secs()
         self._sync_with_storage()
+        state_copy = copy.deepcopy(self.state)
+        self.on_state_change.emit(self.id(), self.status(), state_copy)
 
     def _sync_with_storage(self) -> None:
         logging.debug(f"_sync_with_storage()")
@@ -496,7 +468,7 @@ class Merchant:
         
         execute_order = self.broker.place_test_order if signal.dry_run() else self.broker.place_limit_order
         result = execute_order(
-            source=self.get_merchant_id(signal), 
+            source=self.id(), 
             ticker=signal.ticker(), 
             contracts=signal.contracts(),
             limit=signal.close(),
@@ -504,36 +476,17 @@ class Merchant:
             stop_loss=stop_loss,
             broker_params=signal.broker_params()
         )
-        self._happily_say(self.get_merchant_id(signal), f"Order placement resulted in: {result}")
         """ NOTE
         this will be stored in the tables service - it would be good to think about a schema 
         that would work for any broker
         """
         return result
         
-    def _happily_say(self, merchant_id: str, message: str) -> None:
-        logging.debug(f"_happily_say()")
-        self._say(merchant_id, message, "happy")
-
-    def _sadly_say(self, merchant_id: str, message: str) -> None:
-        logging.debug(f"_sadly_say()")
-        self._say(merchant_id, message, "sad")
-    
-    def _say(self, merchant_id: str, message: str, emotion: str="normal") -> None:
-        logging.debug(f"_say()")
-        title  = f"Robot-#{merchant_id}"
-        if emotion == "happy":
-            self.events_logger.log_success(title, message)
-        elif emotion == "sad":
-            self.events_logger.log_error(title, message)
-        else:
-            self.events_logger.log_notice(title, message)
-
     ## properties
-    def get_merchant_id(self, signal: MerchantSignal) -> str:
-        return self.create_merchant_id(signal.ticker(), signal.low_interval(), signal.high_interval(), signal.version())
+    def _new_id_from_signal(self, signal: MerchantSignal) -> str:
+        return self._create_merchant_id(signal.ticker(), signal.low_interval(), signal.high_interval(), signal.version())
 
-    def create_merchant_id(self, ticker: str, low_interval: str, high_interval: str, version: str) -> str:
+    def _create_merchant_id(self, ticker: str, low_interval: str, high_interval: str, version: str) -> str:
         return f"{ticker}-{low_interval}-{high_interval}-{version}"
 
     def status(self) -> str:
@@ -554,3 +507,8 @@ class Merchant:
     def rest_interval_minutes(self) -> int:
         ## this should come from merchant config
         return int(self.state.get(M_STATE_KEY_REST_INTERVAL()))
+
+    def id(self, signal: MerchantSignal=None) -> str:
+        if signal is not None:
+            self._id = self._new_id_from_signal(signal=signal)
+        return self._id
