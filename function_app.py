@@ -14,12 +14,10 @@ from server import *
 app = func.FunctionApp()
 
 @app.route(route="positions",
-           methods=["GET"],
+           methods=["GET", "POST"],
            auth_level=func.AuthLevel.ANONYMOUS)
 def positions(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("positions() - invoked")
-    if not is_get(req):
-        return rx_invalid_method()
     ## TODO domain check
     try:
         return handle_GET_for_positions(req)
@@ -82,7 +80,7 @@ def merchant_order_placed(merchant_id: str, order_data: dict) -> None:
 
 def merchant_positions_checked(results: dict) -> None:
     evt_logger = default_event_logger()
-    title = f"[[ POSITIONS CHECK REPORT ]]"
+    title = f"POSITIONS CHECK REPORT"
     msg = f"{results}"
     evt_logger.log_notice(title=title, message=msg)
 
@@ -90,19 +88,16 @@ def handle_GET_for_positions(req: func.HttpRequest) -> func.HttpResponse:
     if is_health_check(req):
         return rx_ok()
     
-    if "securityType" not in req.params:
-        return rx_bad_request("securityType is required")
-    
     with connect_table_service() as table_service:
         event_logger = default_event_logger()
         event_logger.log_notice("Notice", f"Received positions check request")
 
-        security_type = req.params.get("securityType")
+        security_type = req.params.get("securityType", "crypto")
         
         broker_repo = BrokerRepository()
         broker = broker_repo.get_for_security(security_type)
         
-        merchant = Merchant(table_service, broker, event_logger)
+        merchant = Merchant(table_service, broker)
         subscribe_events(merchant=merchant)
         results = merchant.check_positions()
         
@@ -127,13 +122,10 @@ def handle_POST_for_signals(req: func.HttpRequest) -> func.HttpResponse:
         if not is_authorized(signal.api_token()):
             return rx_unauthorized()
         
-        event_logger = default_event_logger()
-        event_logger.log_notice("Notice",f"received market signal: {message_body} - which is {signal.info()}")
-        
         broker_repo = BrokerRepository()
         broker = broker_repo.get_for_security(signal.security_type())
         
-        merchant = Merchant(table_service, broker, event_logger)
+        merchant = Merchant(table_service, broker)
         subscribe_events(merchant=merchant)
         merchant.handle_market_signal(signal)
 

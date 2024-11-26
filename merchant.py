@@ -97,19 +97,16 @@ def TABLE_NAME():
 
 class Merchant:
 
-    def __init__(self, table_service: TableServiceClient, broker: OrderCapable, events_logger: EventLoggable) -> None:
+    def __init__(self, table_service: TableServiceClient, broker: OrderCapable) -> None:
         if table_service is None:
             raise ValueError("TableService cannot be null")
         if broker is None:
             raise ValueError("Broker cannot be null")
-        if events_logger is None:
-            raise ValueError("EventsLogger cannot be null")
         
         self._id = None
         self.state = None
         self.table_service = table_service
         self.broker = broker
-        self.events_logger = events_logger
         
         self.TABLE_NAME = TABLE_NAME()
         table_service.create_table_if_not_exists(table_name=self.TABLE_NAME)
@@ -162,6 +159,7 @@ class Merchant:
         logging.debug("_check_profitable_positions()")
         laggards = []
         winners = []
+        losers = []
         leaders = []
         
         for position in positions:
@@ -198,14 +196,29 @@ class Merchant:
             order_contracts = main_order.get("contracts")
             current_price = float(current_prices.get(order_ticker))
 
-            take_profit_percent = float(position[M_STATE_KEY_TAKEPROFIT_PERCENT()])
-            take_profit = order_price + (take_profit_percent * order_price)
+
+            """ NOTE 
+            These all assume a bullish position, but it would be good to handle the 
+            shorting case as well.
+            """
 
             order_data.update({ "current_price": current_price })
             
             if current_price < order_price:
-                laggards.append(order_data)
+                stop_loss_percent = float(position[M_STATE_KEY_TAKEPROFIT_PERCENT()])
+                stop_loss = order_price + (stop_loss_percent * order_price)
+
+                if stop_loss > current_price:
+                    """ NOTE 
+                    Use the actual stop loss orders instead of this for reliability
+                    """
+                    losers.append(order_data)
+                else:
+                    laggards.append(order_data)
             else:
+                take_profit_percent = float(position[M_STATE_KEY_TAKEPROFIT_PERCENT()])
+                take_profit = order_price + (take_profit_percent * order_price)
+
                 if current_price >= take_profit:
                     winners.append(order_data)
                     self._handle_take_profit(
@@ -224,7 +237,8 @@ class Merchant:
         return {
             "winners": winners,
             "laggards": laggards,
-            "leaders": leaders
+            "leaders": leaders,
+            "losers": losers
         }
 
     def _query_current_positions(self) -> list: 

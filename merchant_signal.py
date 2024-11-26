@@ -155,7 +155,7 @@ class MerchantSignal:
         return self.flowmerchant.get("high_interval")
 
     def rest_after_buy(self) -> bool:
-        self.flowmerchant.get("rest_after_buy", False)
+        return self.flowmerchant.get("rest_after_buy", False)
         
     def dry_run(self) -> bool:
         return bool(self.flowmerchant.get("dry_run", False))
@@ -176,13 +176,15 @@ class MerchantSignal:
             f"ticker={self.ticker()}, "
             f"close={self.close()}, "
             f"interval={self.interval()}, "
+            f"low_interval={self.low_interval()}, "
+            f"high_interval={self.high_interval()}, "
             f"suggested_stoploss={self.suggested_stoploss()}, "
             f"high={self.high()}, "
             f"low={self.low()}, "
             f"takeprofit_percent={self.takeprofit_percent()}, "
             f"contracts={self.contracts()}, "
             f"version={self.version()}, "
-            f"rest_interval={self.rest_interval()}"
+            f"rest_interval={self.rest_interval()}, "
             f"rest_after_buy={self.rest_after_buy()}, "
             f"notes={self.notes()}"
             f")"
