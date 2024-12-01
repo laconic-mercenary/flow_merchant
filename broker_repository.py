@@ -10,6 +10,9 @@ class BrokerRepository:
             "forex": None
         }
 
+    def get_security_types(self) -> list:
+        return list(self.__repository.keys())
+
     def is_supported_security(self, security_type: str) -> bool:
         if security_type is None or len(security_type.strip()) == 0:
             return False

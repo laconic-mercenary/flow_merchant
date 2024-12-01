@@ -40,11 +40,54 @@ def signals(req: func.HttpRequest) -> func.HttpResponse:
         default_event_logger().log_error("Error", f"error handling market signal, {e}")
     return rx_not_found()
 
+# @app.route(route="command/{instruction}",
+#            methods=["GET", "POST"],
+#            auth_level=func.AuthLevel.ANONYMOUS)
+# def command(req: func.HttpRequest, instruction: str) -> func.HttpResponse:
+#     logging.info("command() - invoked")
+#     try:
+#         if is_get(req):
+#             if instruction == "app":
+#                 return handle_webapp_for_command()
+#             elif instruction == "get-positions":
+#                 return handle_getpositions_for_command(req)
+#         elif is_post(req):
+#             return handle_instruction_for_command(req=req, command=instruction)
+#     except Exception as e:
+#         logging.error(f"error handling cmd - {e}", exc_info=True)
+#         default_event_logger().log_error("Error", f"error handling command, {e}")
+#     return rx_not_found()
+
 def connect_table_service() -> TableServiceClient:
     return TableServiceClient.from_connection_string(os.environ["storageAccountConnectionString"])
 
 def get_table_client(table_service: TableServiceClient) -> TableClient:
     return table_service.get_table_client(table_name=TABLE_NAME())
+
+def handle_webapp_for_command() -> func.HttpResponse:
+    html = "<html><body><h1>Command</h1></body></html>"
+    return func.HttpResponse(html, mimetype="text/html", status_code=200)
+
+def handle_getpositions_for_command(req: func.HttpRequest) -> func.HttpResponse:
+    ## get positions from database, making sure to hash the IDs
+    ## get current prices for the positions
+    ## return as a json
+    with connect_table_service() as table_service:    
+        broker_repo = BrokerRepository()
+        for sec_type in broker_repo.get_security_types():
+            broker = broker_repo.get_for_security(sec_type)
+            merchant = Merchant(table_service, broker)
+            ## TODO
+    
+    return rx_not_found()
+
+def handle_instruction_for_command(req: func.HttpRequest, command: str) -> func.HttpResponse:
+    ## validate command (length and format)
+    ## query all positions
+    ## hash the IDs of each position
+    ## check it against the command
+    ## determine the command from the post payload (sell is the only one supported)
+    return rx_bad_request()
 
 def handle_for_positions(req: func.HttpRequest) -> func.HttpResponse:
     if is_health_check(req):

@@ -10,7 +10,7 @@ from events import EventLoggable
 from live_capable import LiveCapable
 from merchant_signal import MerchantSignal
 from order_capable import OrderCapable
-from transactions import calculate_stop_loss_from_signal, calculate_take_profit_from_signal, safety_check
+from transactions import calculate_stop_loss_from_signal, calculate_take_profit_from_signal, safety_check, calculate_stop_loss, calculate_take_profit
 from utils import unix_timestamp_secs, unix_timestamp_ms
 
 def S_ACTION_BUY():
@@ -202,8 +202,8 @@ class Merchant:
                 order_data.update({ "current_price": current_price })
                 
                 if current_price < order_price:
-                    stop_loss_percent = float(position[M_STATE_KEY_TAKEPROFIT_PERCENT()])
-                    stop_loss = order_price + (stop_loss_percent * order_price)
+                    stop_loss_percent = float(position[M_STATE_KEY_SUGGESTED_STOPLOSS()])
+                    stop_loss = calculate_stop_loss(close_price=order_price, stop_loss_percent=stop_loss_percent)
 
                     if stop_loss > current_price:
                         """ TODO 
@@ -212,11 +212,17 @@ class Merchant:
                         is probably the most reliable way. 
                         """
                         losers.append(order_data)
+                        self._handle_stop_loss(
+                            position=position,
+                            order_data=order_data,
+                            ticker=order_ticker,
+                            contracts=order_contracts
+                        )
                     else:
                         laggards.append(order_data)
                 else:
                     take_profit_percent = float(position[M_STATE_KEY_TAKEPROFIT_PERCENT()])
-                    take_profit = order_price + (take_profit_percent * order_price)
+                    take_profit = calculate_take_profit(close_price=order_price, take_profit_percent=take_profit_percent)
 
                     if current_price >= take_profit:
                         winners.append(order_data)
@@ -243,6 +249,16 @@ class Merchant:
     def _query_current_positions(self) -> list: 
         table_client = self.table_service.get_table_client(table_name=self.TABLE_NAME)
         return list(table_client.list_entities())
+    
+    def _handle_stop_loss(self, position:dict, order_data:dict, ticker:str, contracts:float) -> None:
+        logging.warning(f"Stop loss reached for {ticker}")
+        order_list:list = json.loads(position[M_STATE_KEY_BROKER_DATA()])
+        if len(order_list) > 1:
+            logging.info(f"multiple positions exist for ticker {ticker} ({len(order_list)}), will remove id {order_data['id']}")
+            new_order_list = [ stored_order_data for stored_order_data in order_list if stored_order_data["id"] != order_data["id"] ]
+            self._update_broker_data(position=position, new_order_list=new_order_list)
+        else:
+            self._delete_stored_position(stored_position=position)
 
     def _handle_take_profit(self, position:dict, order_data:dict, ticker:str, contracts:float) -> None:
         stoploss_order_id = order_data["orders"]["stop_loss"].get("id")
@@ -386,7 +402,8 @@ class Merchant:
             if signal.action() == S_ACTION_BUY():
                 order_result = self._place_order(signal)
                 order_list = json.loads(self.broker_data())
-                order_list.append(json.dumps(order_result))
+                order_list.append(order_result)
+                self.broker_data(json.dumps(order_list))
                 self.on_order_placed.emit(self.merchant_id(), order_result)
                 if signal.rest_after_buy():
                     self._start_resting()
