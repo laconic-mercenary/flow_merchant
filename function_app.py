@@ -165,21 +165,6 @@ def merchant_order_placed(merchant_id: str, order_data: dict) -> None:
     evt_logger.log_success(title=title, message=msg)
 
 def merchant_positions_checked(results: dict) -> None:
-    """
-    {
-        'monitored_tickers': [
-            'PEPEUSDT', 
-            'TNSRUSDT'
-        ], 
-        'current_positions': {
-            'winners': [], 
-            'laggards': [], 
-            'leaders': [], 
-            'losers': []
-        }, 
-        'elapsed_ms': 246
-    }
-    """
     if "monitored_tickers" not in results:
         logging.warning("merchant_positions_checked() - no monitored tickers")
         return
@@ -200,10 +185,32 @@ def merchant_positions_checked(results: dict) -> None:
     if len(monitored_tickers) == 0:
         msg = "I am not monitoring any assets. Please check the correctness of trading view alerts."
     else:
-        winner_ct = len(current_positions.get("winners"))
-        laggard_ct = len(current_positions.get("laggards"))
-        leader_ct = len(current_positions.get("leaders"))
-        loser_ct = len(current_positions.get("losers"))
+        winners = current_positions.get("winners")
+        laggards = current_positions.get("laggards")
+        leaders = current_positions.get("leaders")
+        losers = current_positions.get("losers")
+
+        winner_ct = len(winners)
+        laggard_ct = len(laggards)
+        leader_ct = len(leaders)
+        loser_ct = len(losers)
+
+        def make_friendly(possitions: list) -> list:
+            results = []
+            for pos in possitions:
+                broker = pos.get("broker")
+                ticker = pos.get("ticker")
+                orders = pos.get("orders")
+                main_order = orders.get("main")
+                stop_loss_order = orders.get("stop_loss")
+                current_price = pos.get("current_price")
+
+                main_price = main_order.get("price")
+                main_actual_price = main_order["api_response"].get("price")
+                stop_price = stop_loss_order.get["api_response"].get("price")
+
+                results.append(f"{ticker} close price @ {main_price}, but bought @ {main_actual_price}, stop @ {stop_price}, currently @ {current_price}")
+            return results
 
         total_ct = winner_ct + laggard_ct + leader_ct + loser_ct
         
@@ -212,16 +219,16 @@ def merchant_positions_checked(results: dict) -> None:
             msg += f"\nI am monitoring these tickers: {monitored_tickers}"
 
         if winner_ct > 0:
-            msg += f"\nWinners: {current_positions.get('winners')}"
+            msg += f"\nWinners: {make_friendly(winners)}"
 
         if laggard_ct > 0:
-            msg += f"\nLaggards: {current_positions.get('laggards')}"
+            msg += f"\nLaggards: {make_friendly(laggards)}"
 
         if leader_ct > 0:
-            msg += f"\nLeaders: {current_positions.get('leaders')}"
+            msg += f"\nLeaders: {make_friendly(leaders)}"
 
         if loser_ct > 0:
-            msg += f"\nLosers: {current_positions.get('losers')}"
+            msg += f"\nLosers: {make_friendly(losers)}"
 
         if elapsed_ms > 500:
             msg += f"\nBeware that the elapsed time took {elapsed_ms} ms."
