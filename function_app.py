@@ -11,6 +11,8 @@ from merchant_signal import MerchantSignal
 from merchant import Merchant, TABLE_NAME, M_STATE_KEY_REST_INTERVAL
 from server import *
 
+import command_app
+
 app = func.FunctionApp()
 
 @app.route(route="positions",
@@ -40,23 +42,24 @@ def signals(req: func.HttpRequest) -> func.HttpResponse:
         default_event_logger().log_error("Error", f"error handling market signal, {e}")
     return rx_not_found()
 
-# @app.route(route="command/{instruction}",
-#            methods=["GET", "POST"],
-#            auth_level=func.AuthLevel.ANONYMOUS)
-# def command(req: func.HttpRequest, instruction: str) -> func.HttpResponse:
-#     logging.info("command() - invoked")
-#     try:
-#         if is_get(req):
-#             if instruction == "app":
-#                 return handle_webapp_for_command()
-#             elif instruction == "get-positions":
-#                 return handle_getpositions_for_command(req)
-#         elif is_post(req):
-#             return handle_instruction_for_command(req=req, command=instruction)
-#     except Exception as e:
-#         logging.error(f"error handling cmd - {e}", exc_info=True)
-#         default_event_logger().log_error("Error", f"error handling command, {e}")
-#     return rx_not_found()
+@app.route(route="command/{instruction}",
+           methods=["GET", "POST"],
+           auth_level=func.AuthLevel.ANONYMOUS)
+def command(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info("command() - invoked")
+    instruction = req.route_params.get("instruction")
+    try:
+        if is_get(req):
+            if instruction == "app":
+                return handle_webapp_for_command()
+            elif instruction == "get-positions":
+                return handle_getpositions_for_command(req)
+        elif is_post(req):
+            return handle_instruction_for_command(req=req, command=instruction)
+    except Exception as e:
+        logging.error(f"error handling cmd - {e}", exc_info=True)
+        default_event_logger().log_error("Error", f"error handling command, {e}")
+    return rx_not_found()
 
 def connect_table_service() -> TableServiceClient:
     return TableServiceClient.from_connection_string(os.environ["storageAccountConnectionString"])
@@ -65,8 +68,15 @@ def get_table_client(table_service: TableServiceClient) -> TableClient:
     return table_service.get_table_client(table_name=TABLE_NAME())
 
 def handle_webapp_for_command() -> func.HttpResponse:
-    html = "<html><body><h1>Command</h1></body></html>"
-    return func.HttpResponse(html, mimetype="text/html", status_code=200)
+    with connect_table_service() as table_service:
+        broker_repo = BrokerRepository()
+        broker = broker_repo.get_for_security(security_type="crypto")
+        cmd_app = command_app.CommandApp(table_service=table_service, broker=broker)
+        return func.HttpResponse(
+            body=cmd_app.html(),
+            mimetype="text/html",
+            status_code=200
+        )
 
 def handle_getpositions_for_command(req: func.HttpRequest) -> func.HttpResponse:
     ## get positions from database, making sure to hash the IDs
@@ -203,19 +213,24 @@ def merchant_positions_checked(results: dict) -> None:
                 orders = pos.get("orders")
                 main_order = orders.get("main")
                 stop_loss_order = orders.get("stop_loss")
+                take_profit_order = orders.get("take_profit")
                 current_price = pos.get("current_price")
+                contracts = main_order.get("contracts")
 
                 main_price = main_order.get("price")
-                main_actual_price = main_order["api_response"].get("price")
-                stop_price = stop_loss_order.get["api_response"].get("price")
+                stop_price = stop_loss_order.get("price")
+                take_profit_price = take_profit_order.get("price")
 
-                results.append(f"{ticker} close price @ {main_price}, but bought @ {main_actual_price}, stop @ {stop_price}, currently @ {current_price}")
+                main_total = main_price * contracts
+                stop_total = stop_price * contracts
+                take_profit_total = take_profit_price * contracts
+
+                results.append(f"{ticker} bought via {broker} @ {main_price} x {contracts} ({main_total}), stop @ {stop_price} ({stop_total}, {stop_total - main_total}), profit @ {take_profit_price} ({take_profit_total}, {take_profit_total - main_total}), currently @ {current_price}")
             return results
 
         total_ct = winner_ct + laggard_ct + leader_ct + loser_ct
         
-        if total_ct != 0:
-            msg = f"=== Results ==="
+        if total_ct > 0:
             msg += f"\nI am monitoring these tickers: {monitored_tickers}"
 
         if winner_ct > 0:
@@ -235,7 +250,6 @@ def merchant_positions_checked(results: dict) -> None:
 
     if len(msg) > 0:
         default_event_logger().log_notice(title=title, message=msg)
-
 
 #####################################
 #####################################

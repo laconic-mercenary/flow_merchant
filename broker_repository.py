@@ -1,4 +1,4 @@
-from order_capable import OrderCapable
+from order_capable import Broker
 from ibkr import IBKRClient
 from mexc import MEXC_API
 
@@ -18,7 +18,7 @@ class BrokerRepository:
             return False
         return security_type in self.__repository
 
-    def get_for_security(self, security_type: str) -> OrderCapable:
+    def get_for_security(self, security_type: str) -> Broker:
         if not self.is_supported_security(security_type):
             raise ValueError(f"security type {security_type} not supported")
         return self.__repository[security_type]

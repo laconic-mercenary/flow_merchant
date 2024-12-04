@@ -8,11 +8,8 @@ import time
 from urllib.parse import urlencode
 
 from live_capable import LiveCapable
-from order_capable import OrderCapable
+from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelable
 from utils import unix_timestamp_ms
-
-def MEXC_ENV_API_ENDPOINT():
-    return "MEXC_API_ENDPOINT" 
 
 def MEXC_ENV_API_KEY():
     return "MEXC_API_KEY"
@@ -26,21 +23,35 @@ def MEXC_API_ENDPOINT():
 def MEXC_API_RECEIVE_WINDOW_MILLIS():
     return 10000
 
-class MEXC_API(OrderCapable, LiveCapable):
+class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCapable):
+
+    def get_name(self):
+        return "MEXC"
 
     def cancel_order(self, ticker: str, order_id: str) -> dict:
         return self._api_cancel_order(ticker=ticker, order_id=order_id)
-
-    def place_limit_order(self, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float, broker_params={}) -> dict:
+    
+    def place_market_order(self, ticker:str, action:str, contracts:float, tracking_id = None) -> dict:
         if not self._api_ping():
             msg = "MEXC API is not available"
             logging.error(msg)
             raise ValueError(msg)
-        
-        action = "BUY"
+        if ticker is None or len(ticker) == 0:
+            msg = "Invalid ticker"
+            logging.error(msg)
+            raise ValueError(msg)
+        if contracts <= 0:
+            msg = f"Invalid contracts: {contracts}"
+            logging.error(msg)
+            raise ValueError(msg)
+        action = action.upper()
+        if action not in ["BUY", "SELL"]:
+            msg = f"Invalid action: {action}"
+            logging.error(msg)
+            raise ValueError(msg)
         order_type = "MARKET"
         market_order_ts = unix_timestamp_ms()
-        market_order_id = f"FM_{market_order_ts}"
+        market_order_id = f"FM_{market_order_ts}" if tracking_id is None else tracking_id
         market_order_params = self._create_order_params(
             ticker=ticker, 
             action=action, 
@@ -48,80 +59,80 @@ class MEXC_API(OrderCapable, LiveCapable):
             contracts=contracts, 
             tracking_id=market_order_id
         )
-        market_order_api_rx = self._api_place_order(market_order_params)
-
-        """ TODO 
-        The stop loss order may be too fast for the broker to catch up. 
-        This is because the market order may not be placed immediately.
-        Which means we might get an oversold error. 
-        """
-        exit_side = "SELL" if action == "BUY" else "BUY"
-        stop_loss_order_ts = unix_timestamp_ms()
-        stop_loss_order_id = f"{market_order_id}_s"
-        try:
-            stop_loss_order_api_rx = self._api_stop_limit(
-                ticker=ticker,
-                exit_side=exit_side,
-                price=stop_loss,
-                quantity=contracts,
-                order_id=stop_loss_order_id
-            )
-        except Exception as e:
-            logging.warning(f"error placing stop order, will retry...", exc_info=True)
-            time.sleep(5)
-            if "orderId" not in market_order_api_rx:
-                msg = f"orderId key is not in API order response - received {market_order_api_rx}"
-                raise ValueError(msg)
-            market_order_api_rx = self._api_get_order(ticker, market_order_api_rx.get("orderId"))
-
-            if "executedQty" not in market_order_api_rx:
-                logging.warning(f"executedQty key not found in order response, will default to {contracts}. Order response: {market_order_api_rx}")
-            else:
-                contracts = float(market_order_api_rx.get("executedQty"))
-            
-            stop_loss_order_api_rx = self._api_stop_limit(
-                ticker=ticker,
-                exit_side=exit_side,
-                price=stop_loss,
-                quantity=contracts,
-                order_id=stop_loss_order_id
-            )
-
+        return self._api_place_order(params=market_order_params)
+    
+    def standardize_market_order(self, market_order_result: dict):
+        if "clientOrderId" not in market_order_result:
+            raise ValueError(f"expected key clientOrderId to be in {market_order_result}")
+        if "orderId" not in market_order_result:
+            raise ValueError(f"expected key orderId to be in {market_order_result}")
+        if "transactTime" not in market_order_result:
+            raise ValueError(f"expected key transactTime to be in {market_order_result}")
+        if "origQty" not in market_order_result:
+            raise ValueError(f"expected key origQty to be in {market_order_result}")
+        if "price" not in market_order_result:
+            raise ValueError(f"expected key price to be in {market_order_result}")
         return {
-            "broker": { 
-                "name": "mexc",
-                "params": broker_params,
-            },
-            "ticker": ticker,
-            "orders": {
-                "main": {
-                    "id": market_order_id,
-                    "api_response": market_order_api_rx,
-                    "time": market_order_ts,
-                    "contracts": contracts,
-                    "price": limit
-                },
-                "stop_loss": {
-                    "id": stop_loss_order_id,
-                    "api_response": stop_loss_order_api_rx,
-                    "time": stop_loss_order_ts,
-                    "price": stop_loss
-                }
-            }
+            "id": market_order_result.get("clientOrderId"),
+            "broker_order_id": market_order_result.get("orderId"),
+            "timestamp": market_order_result.get("transactTime"),
+            "contracts": market_order_result.get("origQty"),
+            "price": market_order_result.get("price")
         }
     
-    def place_sell_order(self, ticker:str, contracts:float, tracking_id: str = None) -> dict:
-        action = "SELL"
-        order_type = "MARKET"
-        order_id = tracking_id if tracking_id is not None else f"{ticker}_{unix_timestamp_ms()}"
-        sell_order_params = self._create_order_params(
+    def place_limit_order(self, ticker: str, action: str, contracts: float, limit: float, broker_params: dict = {}) -> dict:
+        if not self._api_ping():
+            msg = "MEXC API is not available"
+            logging.error(msg)
+            raise ValueError(msg)
+        if ticker is None or len(ticker) == 0:
+            msg = "Invalid ticker"
+            logging.error(msg)
+            raise ValueError(msg)
+        if contracts <= 0:
+            msg = f"Invalid contracts: {contracts}"
+            logging.error(msg)
+            raise ValueError(msg)
+        if limit <= 0:
+            msg = f"Invalid limit: {limit}"
+            logging.error(msg)
+            raise ValueError(msg)
+        action = action.upper()
+        if action not in ["BUY", "SELL"]:
+            msg = f"Invalid action: {action}"
+            logging.error(msg)
+            raise ValueError(msg)
+        order_type = "LIMIT"
+        limit_order_ts = unix_timestamp_ms()
+        limit_order_id = f"FM_{limit_order_ts}"
+        limit_order_params = self._create_order_params(
             ticker=ticker,
             action=action,
             order_type=order_type,
             contracts=contracts,
-            tracking_id=order_id
+            tracking_id=limit_order_id,
+            target_price=limit
         )
-        return self._api_place_order(sell_order_params)
+        return self._api_place_order(params=limit_order_params)
+    
+    def standardize_limit_order(self, limit_order_result: dict) -> dict:
+        if "clientOrderId" not in limit_order_result:
+            raise ValueError(f"expected key clientOrderId to be in {limit_order_result}")
+        if "orderId" not in limit_order_result:
+            raise ValueError(f"expected key orderId to be in {limit_order_result}")
+        if "transactTime" not in limit_order_result:
+            raise ValueError(f"expected key transactTime to be in {limit_order_result}")
+        if "origQty" not in limit_order_result:
+            raise ValueError(f"expected key origQty to be in {limit_order_result}")
+        if "price" not in limit_order_result:
+            raise ValueError(f"expected key price to be in {limit_order_result}")
+        return {
+            "id": limit_order_result.get("clientOrderId"),
+            "broker_order_id": limit_order_result.get("orderId"),
+            "timestamp": limit_order_result.get("transactTime"),
+            "contracts": limit_order_result.get("origQty"),
+            "price": limit_order_result.get("price")
+        }
     
     def get_order(self, ticker: str, order_id: str) -> dict:
         logging.debug("get_order")

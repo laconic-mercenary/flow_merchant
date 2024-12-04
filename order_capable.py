@@ -1,47 +1,46 @@
-import uuid
 
 from abc import ABC, abstractmethod
 
-from utils import unix_timestamp_ms
+class Broker(ABC):
+    @abstractmethod
+    def get_name(self) -> str:
+        pass
 
-class OrderCapable(ABC):
+class MarketOrderable(ABC):
+    @abstractmethod
+    def place_market_order(self, ticker:str, action:str, contracts:float, broker_params:dict = {}, tracking_id = None) -> dict:
+        pass
 
     @abstractmethod
-    def place_limit_order(self, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float, broker_params={}) -> dict:
+    def standardize_market_order(self, market_order_result: dict) -> dict:
         pass
+
+class LimitOrderable(ABC):
+
+    @abstractmethod
+    def place_limit_order(self, ticker:str, action:str, contracts:float, limit:float, broker_params: dict={}) -> dict:
+        pass
+
+    @abstractmethod
+    def standardize_limit_order(self, limit_order_result: dict) -> dict:
+        pass
+
+class OrderCancelable(ABC):
 
     @abstractmethod
     def cancel_order(self, ticker: str, order_id: str) -> dict:
         pass
 
+class DryRunnable(ABC):
+
     @abstractmethod
-    def place_sell_order(self, ticker:str, contracts:float, tracking_id: str = None) -> dict:
+    def place_market_order_test(self, ticker:str, action:str, contracts:float, broker_params:dict = {}, tracking_id = None) -> dict:
         pass
 
-    def create_event(self, type: str, source: str, ticker: str, contracts: float, limit: float, take_profit: float, stop_loss: float) -> dict:
-        attributes = {
-            "type": f"net.revanchist.flowmerchant.{type}",
-            "source": "/api/flow_merchant",
-            "id": f"{source}-{str(uuid.uuid4())}",
-            "datacontenttype": "application/json",
-            "subject": f"{source}"
-        }
-        payload = {
-            "orders": {
-                "market_order": {
-                    "ticker": ticker,
-                    "contracts": contracts,
-                    "limit_price": limit
-                },
-                "stop_loss_order" : {
-                    "stop_loss_price": stop_loss
-                },
-                "take_profit_order" : {
-                    "take_profit_price": take_profit
-                }
-            }
-        }
-        return { 
-            "metadata": attributes, 
-            "data": payload
-        }
+    @abstractmethod
+    def place_limit_order_test(self, ticker:str, action:str, contracts:float, limit:float, broker_params: dict={}) -> dict:
+        pass
+
+    @abstractmethod
+    def cancel_order_test(self, ticker: str, order_id: str) -> dict:
+        pass
