@@ -8,7 +8,7 @@ import time
 from urllib.parse import urlencode
 
 from live_capable import LiveCapable
-from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelable
+from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelable, DryRunnable
 from utils import unix_timestamp_ms
 
 def MEXC_ENV_API_KEY():
@@ -23,45 +23,27 @@ def MEXC_API_ENDPOINT():
 def MEXC_API_RECEIVE_WINDOW_MILLIS():
     return 10000
 
-class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCapable):
+class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCapable, DryRunnable):
 
-    def get_name(self):
+    def get_name(self) -> str:
         return "MEXC"
 
     def cancel_order(self, ticker: str, order_id: str) -> dict:
-        return self._api_cancel_order(ticker=ticker, order_id=order_id)
+        return self._api_cancel_order(
+            ticker=ticker, 
+            order_id=order_id
+        )
     
     def place_market_order(self, ticker:str, action:str, contracts:float, tracking_id = None) -> dict:
-        if not self._api_ping():
-            msg = "MEXC API is not available"
-            logging.error(msg)
-            raise ValueError(msg)
-        if ticker is None or len(ticker) == 0:
-            msg = "Invalid ticker"
-            logging.error(msg)
-            raise ValueError(msg)
-        if contracts <= 0:
-            msg = f"Invalid contracts: {contracts}"
-            logging.error(msg)
-            raise ValueError(msg)
-        action = action.upper()
-        if action not in ["BUY", "SELL"]:
-            msg = f"Invalid action: {action}"
-            logging.error(msg)
-            raise ValueError(msg)
-        order_type = "MARKET"
-        market_order_ts = unix_timestamp_ms()
-        market_order_id = f"FM_{market_order_ts}" if tracking_id is None else tracking_id
-        market_order_params = self._create_order_params(
+        return self._place_market_order(
             ticker=ticker, 
             action=action, 
-            order_type=order_type, 
             contracts=contracts, 
-            tracking_id=market_order_id
+            tracking_id=tracking_id, 
+            dry_run=False
         )
-        return self._api_place_order(params=market_order_params)
     
-    def standardize_market_order(self, market_order_result: dict):
+    def standardize_market_order(self, market_order_result: dict) -> dict:
         if "clientOrderId" not in market_order_result:
             raise ValueError(f"expected key clientOrderId to be in {market_order_result}")
         if "orderId" not in market_order_result:
@@ -81,39 +63,14 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
         }
     
     def place_limit_order(self, ticker: str, action: str, contracts: float, limit: float, broker_params: dict = {}) -> dict:
-        if not self._api_ping():
-            msg = "MEXC API is not available"
-            logging.error(msg)
-            raise ValueError(msg)
-        if ticker is None or len(ticker) == 0:
-            msg = "Invalid ticker"
-            logging.error(msg)
-            raise ValueError(msg)
-        if contracts <= 0:
-            msg = f"Invalid contracts: {contracts}"
-            logging.error(msg)
-            raise ValueError(msg)
-        if limit <= 0:
-            msg = f"Invalid limit: {limit}"
-            logging.error(msg)
-            raise ValueError(msg)
-        action = action.upper()
-        if action not in ["BUY", "SELL"]:
-            msg = f"Invalid action: {action}"
-            logging.error(msg)
-            raise ValueError(msg)
-        order_type = "LIMIT"
-        limit_order_ts = unix_timestamp_ms()
-        limit_order_id = f"FM_{limit_order_ts}"
-        limit_order_params = self._create_order_params(
-            ticker=ticker,
-            action=action,
-            order_type=order_type,
-            contracts=contracts,
-            tracking_id=limit_order_id,
-            target_price=limit
+        return self._place_limit_order(
+            ticker=ticker, 
+            action=action, 
+            contracts=contracts, 
+            limit=limit, 
+            broker_params=broker_params, 
+            dry_run=False
         )
-        return self._api_place_order(params=limit_order_params)
     
     def standardize_limit_order(self, limit_order_result: dict) -> dict:
         if "clientOrderId" not in limit_order_result:
@@ -160,8 +117,129 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             ticker = price["symbol"]
             if ticker in symbols:
                 result[ticker] = float(price["price"])
+        result.update({ "_timechecked": unix_timestamp_ms() })
         return result 
     
+    def place_market_order_test(self, ticker: str, action: str, contracts: float, broker_params: dict = {}, tracking_id:str=None) -> dict:
+        result = self._place_market_order(
+            ticker=ticker, 
+            action=action, 
+            contracts=contracts, 
+            tracking_id=tracking_id, 
+            dry_run=True
+        )
+        if len(result.keys()) != 0:
+            raise ValueError(f"expected result to be empty, but got {result}")
+        """ NOTE - Although not very authentic, this is as close to a fill-price for a market order as we can get. """
+        current_prices = self.get_current_prices(symbols=[ticker])
+        if ticker not in current_prices:
+            raise ValueError(f"expected key {ticker} to be in {current_prices}")
+        tracking_id = f"{ticker}-{unix_timestamp_ms()}" if tracking_id is None else tracking_id
+        dryrun_tracking_id = f"{tracking_id}_DRYRUN"
+        return {
+            "clientOrderId": dryrun_tracking_id,
+            "orderId": dryrun_tracking_id,
+            "transactTime": unix_timestamp_ms(),
+            "origQty": contracts,
+            "price": current_prices.get(ticker)
+        }
+
+    def place_limit_order_test(self, ticker, action, contracts, limit, broker_params:dict = {}, tracking_id:str = None) -> dict:
+        results = self._place_limit_order(
+            ticker=ticker, 
+            action=action, 
+            contracts=contracts, 
+            limit=limit, 
+            dry_run=True
+        )
+        if len(results.keys()) != 0:
+            raise ValueError(f"Expected no results for dry run, but got {results}")
+        current_prices = self.get_current_prices(symbols=[ticker])
+        if ticker not in current_prices:
+            raise ValueError(f"expected key {ticker} to be in {current_prices}")
+        tracking_id = f"{ticker}-{unix_timestamp_ms()}" if tracking_id is None else tracking_id
+        dryrun_tracking_id = f"{tracking_id}_l_DRYRUN"
+        return {
+            "clientOrderId": dryrun_tracking_id,
+            "orderId": dryrun_tracking_id,
+            "transactTime": unix_timestamp_ms(),
+            "origQty": contracts,
+            "price": limit
+        }
+    
+    def cancel_order_test(self, ticker, order_id) -> dict:
+        self._api_cancel_order(ticker=ticker, order_id=order_id, dry_run=True)
+
+    ## PRIVATE METHODS
+    
+    def _place_market_order(self, ticker:str, action:str, contracts:float, tracking_id = None, dry_run:bool = False) -> dict:
+        if not self._api_ping():
+            msg = "MEXC API is not available"
+            logging.error(msg)
+            raise ValueError(msg)
+        if ticker is None or len(ticker) == 0:
+            msg = "Invalid ticker"
+            logging.error(msg)
+            raise ValueError(msg)
+        if contracts <= 0:
+            msg = f"Invalid contracts: {contracts}"
+            logging.error(msg)
+            raise ValueError(msg)
+        action = action.upper()
+        if action not in ["BUY", "SELL"]:
+            msg = f"Invalid action: {action}"
+            logging.error(msg)
+            raise ValueError(msg)
+        order_type = "MARKET"
+        market_order_ts = unix_timestamp_ms()
+        market_order_id = f"FM_{market_order_ts}" if tracking_id is None else tracking_id
+        market_order_params = self._create_order_params(
+            ticker=ticker, 
+            action=action, 
+            order_type=order_type, 
+            contracts=contracts, 
+            tracking_id=market_order_id
+        )
+        return self._api_place_order(params=market_order_params,dry_run=dry_run)
+    
+    def _place_limit_order(self, ticker: str, action: str, contracts: float, limit: float, broker_params: dict = {}, dry_run:bool = False) -> dict:
+        if not self._api_ping():
+            msg = "MEXC API is not available"
+            logging.error(msg)
+            raise ValueError(msg)
+        if ticker is None or len(ticker) == 0:
+            msg = "Invalid ticker"
+            logging.error(msg)
+            raise ValueError(msg)
+        if contracts <= 0:
+            msg = f"Invalid contracts: {contracts}"
+            logging.error(msg)
+            raise ValueError(msg)
+        if limit <= 0:
+            msg = f"Invalid limit: {limit}"
+            logging.error(msg)
+            raise ValueError(msg)
+        action = action.upper()
+        if action not in ["BUY", "SELL"]:
+            msg = f"Invalid action: {action}"
+            logging.error(msg)
+            raise ValueError(msg)
+        order_type = "LIMIT"
+        limit_order_ts = unix_timestamp_ms()
+        limit_order_id = f"FM_{limit_order_ts}"
+        limit_order_params = self._create_order_params(
+            ticker=ticker,
+            action=action,
+            order_type=order_type,
+            contracts=contracts,
+            tracking_id=limit_order_id,
+            target_price=limit
+        )
+        return self._api_place_order(
+            params=limit_order_params, 
+            dry_run=dry_run
+        )
+
     def _cfg_api_key(self) -> str:
         api_key = os.environ[MEXC_ENV_API_KEY()]
         if api_key is None or len(api_key) == 0:
@@ -199,9 +277,16 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
         response = requests.get(url)
         return response.status_code == 200
     
-    def _api_get_current_prices(self) -> dict:
+    def _api_get_current_prices(self, ticker: str = None) -> dict:
         url = f"{self._cfg_api_endpoint()}/api/v3/ticker/price"
-        response = requests.get(url)
+        if ticker is not None:
+            params = {
+                "symbol": ticker,
+            }
+            headers = self._request_headers()
+            response = requests.get(f"{url}", headers=headers, params=params)
+        else:
+            response = requests.get(url)
         return response.json()
 
     def _api_get_server_time(self) -> str:
@@ -216,17 +301,6 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             logging.error(f"Failed to get server time")
             raise ValueError(f"Failed to get server time")
         return response.get("serverTime")
-    
-    def _api_stop_limit(self, ticker: str, exit_side: str, quantity: float, price: float, order_id: str) -> dict:
-        params = self._create_order_params(
-            ticker=ticker,
-            action=exit_side,
-            order_type="LIMIT",
-            contracts=quantity,
-            target_price=price,
-            tracking_id=order_id
-        )
-        return self._api_place_order(params, dry_run=False)
     
     def _api_get_account_info(self) -> dict:
         """ NOTE
@@ -309,16 +383,22 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             raise ValueError(msg)
         
         return response.json()
-    
 
-    def _api_cancel_order(self, ticker: str, order_id: str) -> dict:
+    def _api_cancel_order(self, ticker: str, order_id: str, dry_run:bool = False) -> dict:
         if ticker is None or len(ticker) == 0:
             raise ValueError("ticker is required")
         if order_id is None or len(order_id) == 0:
             raise ValueError("order_id is required")
+        if dry_run:
+            logging.info(f"Dry run: cancel order {order_id} for {ticker}")
+            return { 
+                "result": "no action due to DRY RUN mode being set", 
+                "ticker": ticker, 
+                "order_id": order_id 
+            }
         
         base_url = self._cfg_api_endpoint()
-        endpoint = "/api/v3/order"        
+        endpoint = "/api/v3/order"
         server_time = self._timestamp()
         params = {
             "symbol": ticker,

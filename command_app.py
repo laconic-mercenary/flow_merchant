@@ -23,12 +23,14 @@ class CommandApp:
     def html(self) -> str:
         positions = self._get_positions()
         return f"""
-        <html>
+        <!doctype html>
+        <html lang="en">>
             <head>
                 <title>Flow Merchant</title>
+                <meta charset="UTF-8" />
+                {self._render_js()}
             </head>
             <body>
-                {self._render_js()}
                 {self._render_positions_table(positions)}
             </body>
         </html>

@@ -1,9 +1,17 @@
 import hashlib
+import os
 
-def hash(target: str, times: int = 10) -> str:
-    if times < 0:
-        raise ValueError("times must be >= 0")
-    while times > 0:
-        target = hashlib.sha256(target.encode("utf-8")).hexdigest()
-        times -= 1
+class cfg:
+    @staticmethod
+    def DEFAULT_HASH_COUNT() -> int:
+        return int(os.environ.get("SECURITY_DEFAULT_HASH_COUNT", "77"))
+
+def hash(target: str, count: int = cfg.DEFAULT_HASH_COUNT()) -> str:
+    if count < 0:
+        raise ValueError("count must be >= 0")
+    encoding = "utf-8"
+    while count > 0:
+        target = hashlib.sha256(target.encode(encoding)).hexdigest()
+        count -= 1
     return target
+

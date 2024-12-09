@@ -163,10 +163,11 @@ def merchant_state_changed(merchant_id: str, status: str, state: dict) -> None:
     evt_logger.log_notice(title=title, message=msg)
 
 def merchant_signal_received(merchant_id: str, signal: MerchantSignal) -> None:
-    evt_logger = default_event_logger()
-    title = f"{merchant_id} says:"
-    msg = f"New signal received: {signal.info()}"
-    evt_logger.log_notice(title=title, message=msg)
+    pass
+    #evt_logger = default_event_logger()
+    #title = f"{merchant_id} says:"
+    #msg = f"New signal received: {signal.info()}"
+    #evt_logger.log_notice(title=title, message=msg)
 
 def merchant_order_placed(merchant_id: str, order_data: dict) -> None:
     evt_logger = default_event_logger()
@@ -205,48 +206,68 @@ def merchant_positions_checked(results: dict) -> None:
         leader_ct = len(leaders)
         loser_ct = len(losers)
 
-        def make_friendly(possitions: list) -> list:
+        def make_friendly(positions: list) -> list:
             results = []
-            for pos in possitions:
-                broker = pos.get("broker")
-                ticker = pos.get("ticker")
-                orders = pos.get("orders")
-                main_order = orders.get("main")
-                stop_loss_order = orders.get("stop_loss")
-                take_profit_order = orders.get("take_profit")
+            for pos in positions:
+                if "order" not in pos: 
+                    raise ValueError(f"expected key order in position {pos}")
+                order = pos.get("order")
+                if "projections" not in order:
+                    raise ValueError(f"expected key projections in order {order}")
+                if "ticker" not in order:
+                    raise ValueError(f"expected key ticker in order {order}")
+                
+                ticker = order.get("ticker")
+                sub_orders = order.get("orders")
                 current_price = pos.get("current_price")
-                contracts = main_order.get("contracts")
 
+                main_order = sub_orders.get("main")
+                stop_loss_order = sub_orders.get("stop_loss")
+                take_profit_order = sub_orders.get("take_profit")
+                
                 main_price = main_order.get("price")
+                main_contracts = main_order.get("contracts")
+
                 stop_price = stop_loss_order.get("price")
+
                 take_profit_price = take_profit_order.get("price")
 
-                main_total = main_price * contracts
-                stop_total = stop_price * contracts
-                take_profit_total = take_profit_price * contracts
+                main_total = main_price * main_contracts
 
-                results.append(f"{ticker} bought via {broker} @ {main_price} x {contracts} ({main_total}), stop @ {stop_price} ({stop_total}, {stop_total - main_total}), profit @ {take_profit_price} ({take_profit_total}, {take_profit_total - main_total}), currently @ {current_price}")
+                projections = order.get("projections")
+                potential_profit = projections.get("profit_without_fees")
+                potential_loss = projections.get("loss_without_fees")
+
+                main_price = round(main_price, 5)
+                main_contracts = round(main_contracts, 5)
+                main_total = round(main_total, 5)
+                stop_price = round(stop_price, 5)
+                potential_loss = round(potential_loss, 5)
+                take_profit_price = round(take_profit_price, 5)
+                potential_profit = round(potential_profit, 5)
+                current_price = round(current_price, 5)
+
+                results.append(f"{ticker} bought @ {main_price} x {main_contracts} for total of {main_total} -- stop @ {stop_price} with potential loss of {potential_loss} -- profit @ {take_profit_price} with potential profit of {potential_profit} -- currently @ {current_price} (values are NOT exact)")
             return results
 
-        total_ct = winner_ct + laggard_ct + leader_ct + loser_ct
-        
-        if total_ct > 0:
-            msg += f"\nI am monitoring these tickers: {monitored_tickers}"
-
         if winner_ct > 0:
-            msg += f"\nWinners: {make_friendly(winners)}"
+            laughing_face = "\U0001F923"
+            msg += f"\n[{laughing_face}] WINNERS: {make_friendly(winners)}"
 
         if laggard_ct > 0:
-            msg += f"\nLaggards: {make_friendly(laggards)}"
+            sickly_face = "\U0001F912"
+            msg += f"\n[{sickly_face}] Laggards: {make_friendly(laggards)}"
 
         if leader_ct > 0:
-            msg += f"\nLeaders: {make_friendly(leaders)}"
+            smiley_face = "\U0001f600"
+            msg += f"\n[{smiley_face}] Leaders: {make_friendly(leaders)}"
 
         if loser_ct > 0:
-            msg += f"\nLosers: {make_friendly(losers)}"
+            clown_face = "\U0001F921"
+            msg += f"\n[{clown_face}] LOSERS: {make_friendly(losers)}"
 
         if elapsed_ms > 500:
-            msg += f"\nBeware that the elapsed time took {elapsed_ms} ms."
+            msg += f"\nBeware that the positions check took {elapsed_ms} ms to complete."
 
     if len(msg) > 0:
         default_event_logger().log_notice(title=title, message=msg)
