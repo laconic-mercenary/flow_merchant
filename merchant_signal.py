@@ -56,7 +56,7 @@ class MerchantSignal:
         if not flowmerchant:
             logging.error("Flowmerchant information is missing")
             raise ValueError("Flowmerchant information is required")
-        required_flowmerchant_keys = ["suggested_stoploss", "takeprofit_percent", "rest_interval_minutes", "version", "action"]
+        required_flowmerchant_keys = ["suggested_stoploss", "takeprofit_percent", "low_interval", "high_interval", "version", "action"]
         for key in required_flowmerchant_keys:
             if key not in flowmerchant:
                 logging.error(f"Missing required flowmerchant key: {key}")
@@ -93,7 +93,6 @@ class MerchantSignal:
         try:
             float(flowmerchant["suggested_stoploss"])
             float(flowmerchant["takeprofit_percent"])
-            int(flowmerchant["rest_interval_minutes"])
         except ValueError as e:
             logging.error(f"Flowmerchant values must be numbers: {e}")
             raise ValueError("Flowmerchant values must be numbers")
@@ -109,7 +108,7 @@ class MerchantSignal:
         return self.security.get("ticker")
 
     def exchange(self) -> str:
-        return self.security.get("exchange")
+        return self.security.get("exchange", "none")
 
     def security_type(self) -> str:
         return self.security.get("type")
@@ -140,7 +139,7 @@ class MerchantSignal:
         return float(self.flowmerchant.get("takeprofit_percent"))
 
     def rest_interval(self) -> int:
-        return int(self.flowmerchant.get("rest_interval_minutes"))
+        return int(self.flowmerchant.get("rest_interval_minutes", "15"))
 
     def version(self) -> int:
         return int(self.flowmerchant.get("version"))
