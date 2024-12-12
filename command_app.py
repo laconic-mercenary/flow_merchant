@@ -114,7 +114,7 @@ class CommandApp:
         take_profit = position.get("take_profit_price")
         current_price = position.get("current_price")
         order_id = position.get("id")
-        order_id = security.hash(order_id, times=self._cfg_hash_count())
+        order_id = security.hash(order_id)
         return f"""
         <tr>
             <td>{ticker}</td>
@@ -127,5 +127,3 @@ class CommandApp:
         </tr>
         """
     
-    def _cfg_hash_count(self) -> int:
-        return int(os.environ.get("COMMAND_APP_HASH_COUNT", "77"))

@@ -250,27 +250,30 @@ def merchant_positions_checked(results: dict) -> None:
                 results.append(f"{ticker} bought @ {main_price} x {main_contracts} for total of {main_total} -- stop @ {stop_price} with potential loss of {potential_loss} -- profit @ {take_profit_price} with potential profit of {potential_profit} -- currently @ {current_price} (values are NOT exact)")
             return results
 
-        if winner_ct > 0:
-            laughing_face = "\U0001F923"
-            msg += f"\n[{laughing_face}] WINNERS: {make_friendly(winners)}"
+        if winner_ct != 0:
+            clown_face = "\U0001F921"
+            msg += f"\n[{clown_face}] WINNERS: {make_friendly(winners)}"
 
-        if laggard_ct > 0:
-            sickly_face = "\U0001F912"
-            msg += f"\n[{sickly_face}] Laggards: {make_friendly(laggards)}"
-
-        if leader_ct > 0:
+        if leader_ct != 0:
             smiley_face = "\U0001f600"
             msg += f"\n[{smiley_face}] Leaders: {make_friendly(leaders)}"
 
-        if loser_ct > 0:
-            clown_face = "\U0001F921"
-            msg += f"\n[{clown_face}] LOSERS: {make_friendly(losers)}"
+        if laggard_ct != 0:
+            sickly_face = "\U0001F912"
+            msg += f"\n[{sickly_face}] Laggards: {make_friendly(laggards)}"
+
+        if loser_ct != 0:
+            barf_face = "\U0001F92E"
+            msg += f"\n[{barf_face}] LOSERS: {make_friendly(losers)}"
 
         if elapsed_ms > 500:
             msg += f"\nBeware that the positions check took {elapsed_ms} ms to complete."
 
-    if len(msg) > 0:
-        default_event_logger().log_notice(title=title, message=msg)
+    if len(msg) != 0:
+        if winner_ct != 0:
+            default_event_logger().log_success(title=title, message=msg)
+        else:
+            default_event_logger().log_notice(title=title, message=msg)
 
 #####################################
 #####################################
