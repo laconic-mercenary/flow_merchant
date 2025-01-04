@@ -108,7 +108,7 @@ class Merchant:
     def _check_position(self, position:dict, database:dict) -> dict:
         order_list = json.loads(position.get(keys.BROKER_DATA()))
         ticker = position.get(keys.TICKER())
-        if "current_price" not in database:
+        if "current_prices" not in database:
             raise ValueError("Current price not found in database")
         current_prices = database.get("current_prices")
         if ticker not in current_prices:
