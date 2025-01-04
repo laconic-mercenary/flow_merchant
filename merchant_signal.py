@@ -133,10 +133,16 @@ class MerchantSignal:
 
     # Accessor methods for flowmerchant
     def suggested_stoploss(self) -> float:
-        return float(self.flowmerchant.get("suggested_stoploss"))
+         stop_loss = float(self.flowmerchant.get("suggested_stoploss"))
+         if stop_loss < 0.0 or stop_loss > 100.0:
+             raise ValueError("stop_loss must be between 0.0 and 100.0")
+         return stop_loss    
 
     def takeprofit_percent(self) -> float:
-        return float(self.flowmerchant.get("takeprofit_percent"))
+        take_profit = float(self.flowmerchant.get("takeprofit_percent"))
+        if take_profit < 0.0 or take_profit > 100.0:
+            raise ValueError("take_profit must be between 0.0 and 100.0")
+        return take_profit
 
     def rest_interval(self) -> int:
         return int(self.flowmerchant.get("rest_interval_minutes", "15"))
