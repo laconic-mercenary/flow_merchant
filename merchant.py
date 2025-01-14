@@ -25,6 +25,12 @@ class cfg:
     @staticmethod
     def MULTI_TRADE_MODE() -> bool:
         return os.environ.get("MERCHANT_MULTI_TRADE_MODE", "false").lower() == "true"
+
+    @staticmethod
+    def DRY_RUN_EXCEPTIONS() -> list[str]:
+        raw_list = os.environ.get("MERCHANT_DRY_RUN_EXCEPTIONS", "-")
+        raw_list = raw_list.split(",")
+        return [ entry.strip() for entry in raw_list ]
     
     @staticmethod
     def TABLE_NAME():
@@ -72,13 +78,15 @@ class Merchant:
 
     def _check_positions(self) -> dict:
         if not self._check_broker():
-            return {}
+            return { }
         current_positions = self._query_current_positions()
-        account_db = { }
+        database = { }
         tickers = [ position[keys.TICKER()] for position in current_positions if keys.TICKER() in position ]
         tickers.sort()
+        
         current_prices = self.broker.get_current_prices(symbols=tickers)
-        account_db.update({ "current_prices": current_prices })
+        database.update({ "current_prices": current_prices })
+
         results = {
             "monitored_tickers": tickers,
             "positions": {
@@ -89,32 +97,30 @@ class Merchant:
             },
             "current_prices": current_prices
         }
+        
         for position in current_positions:
-            check_result = self._check_position(
-                                position=position, 
-                                database=account_db
-                            )
+            ticker = position.get(keys.TICKER())
+            if ticker not in current_prices:
+                logging.warning(f"check_positions() - no price for {ticker} - {current_prices}")
+            else:
+                check_result = self._check_position(
+                                    position=position, 
+                                    database=database
+                                )
 
-            if check_result.get("updated", False):
-                self._sync_with_storage(state=position)
-            
-            results["positions"]["losers"].extend(check_result["orders"]["losers"])
-            results["positions"]["winners"].extend(check_result["orders"]["winners"])
-            results["positions"]["leaders"].extend(check_result["orders"]["leaders"])
-            results["positions"]["laggards"].extend(check_result["orders"]["laggards"])
+                if check_result.get("updated", False):
+                    self._sync_with_storage(state=position)
+                
+                results["positions"]["losers"].extend(check_result["orders"]["losers"])
+                results["positions"]["winners"].extend(check_result["orders"]["winners"])
+                results["positions"]["leaders"].extend(check_result["orders"]["leaders"])
+                results["positions"]["laggards"].extend(check_result["orders"]["laggards"])
         return results
 
 
     def _check_position(self, position:dict, database:dict) -> dict:
         order_list = json.loads(position.get(keys.BROKER_DATA()))
-        ticker = position.get(keys.TICKER())
-        if "current_prices" not in database:
-            raise ValueError("Current price not found in database")
-        current_prices = database.get("current_prices")
-        if ticker not in current_prices:
-            raise ValueError(f"Current price not found for ticker: {ticker}")
         results = { 
-            "current_price": current_prices.get(ticker),
             "updated": False,
             "orders": {
                 "losers": [],
@@ -123,6 +129,9 @@ class Merchant:
                 "laggards": []
             }
         }
+
+        ticker = position.get(keys.TICKER())
+        current_prices = database.get("current_prices")
 
         for order in order_list:
             suborders = order.get(keys.bkrdata.order.SUBORDERS())
@@ -134,14 +143,23 @@ class Merchant:
             current_price = current_prices.get(ticker)
             main_order_price = main_order.get(keys.bkrdata.order.suborders.props.PRICE())
             take_profit_price = take_profit_order.get(keys.bkrdata.order.suborders.props.PRICE())
+            stop_loss_order_id = stop_loss_order.get(keys.bkrdata.order.suborders.props.ID())
             stop_loss_price = stop_loss_order.get(keys.bkrdata.order.suborders.props.PRICE())
             strategy = self._strategy_from_order(order=order)
 
             logging.info(f"Checking position: {ticker}, strategy: {strategy.name()} order:{order}")
 
-
+            if not is_dry_run:
+                stop_loss_order_info = self.broker.get_order(ticker=ticker, order_id=stop_loss_order_id)
+                logging.info(f"(from broker) stop loss order info: {stop_loss_order_info}")
+                if stop_loss_order_info.get("ready"):
+                    logging.warning(f"Stop loss was triggered for {ticker} -- according to broker")
+                    ## kinda hacky but reuses the logic below
+                    stop_loss_price = take_profit_price - 1.0
+                    current_price = stop_loss_price - 1.0
 
             if current_price >= take_profit_price:
+                logging.info(f"take profit {take_profit_price} hit for {ticker} at {current_price}")
                 handle_tp_result = strategy.handle_take_profit(
                                         broker=self.broker,
                                         order=order,
@@ -156,23 +174,32 @@ class Merchant:
                     order.update({ "remove": True })
                 else:
                     results["orders"]["leaders"].append(order)
-            elif current_price <= stop_loss_price:
-                order.update({ "remove": True })
-                results.update({ "updated": True })
-                projections = order.get(keys.bkrdata.order.PROJECTIONS())
-                stop_pnl = projections.get(keys.bkrdata.order.projections.LOSS_WITHOUT_FEES())
-                if stop_pnl > 0.0:
-                    results["orders"]["winners"].append(order)
-                else:
-                    results["orders"]["losers"].append(order)
-            elif current_price >= main_order_price:
-                results["orders"]["leaders"].append(order)
             else:
-                results["orders"]["laggards"].append(order)
+                if current_price <= stop_loss_price:
+                    logging.info(f"stop loss {stop_loss_price} hit for {ticker} at {current_price}")
+                    order.update({ "remove": True })
+                    results.update({ "updated": True })
+                    projections = order.get(keys.bkrdata.order.PROJECTIONS())
+                    stop_pnl = projections.get(keys.bkrdata.order.projections.LOSS_WITHOUT_FEES())
+                    if stop_pnl > 0.0:
+                        results["orders"]["winners"].append(order)
+                    else:
+                        results["orders"]["losers"].append(order)
+                else:
+                    if current_price >= main_order_price:
+                        results["orders"]["leaders"].append(order)
+                    else:
+                        results["orders"]["laggards"].append(order)
 
-        new_order_list = [ order for order in order_list if not order.get("remove", False) ]
+        new_order_list = [ ]
+        for order in order_list:
+            if order.get("remove", False):
+                logging.info(f"removing order {order}")
+            else:
+                new_order_list.append(order)
+        
         new_order_list.sort(key=lambda order: order[keys.bkrdata.order.METADATA()].get(keys.bkrdata.order.metadata.TIME_CREATED()))
-        position.update({ keys.bkrdata.order.SUBORDERS(): json.dumps(new_order_list) })
+        position.update({ keys.BROKER_DATA(): json.dumps(new_order_list) })
 
         return results
 
@@ -191,197 +218,6 @@ class Merchant:
             logging.warning("Broker is not OrderCancelable - will skip checking positions")
             result = False
         return result
-
-    # def _check_positions(self) -> dict:
-    #     if not isinstance(self.broker, LiveCapable):
-    #         logging.warning("Broker is not LiveCapable - will skip checking positions")
-    #         return { }
-    #     if not isinstance(self.broker, MarketOrderable):
-    #         logging.warning("Broker is not MarketOrderable - will skip checking positions")
-    #         return { }
-    #     if not isinstance(self.broker, LimitOrderable):
-    #         logging.warning("Broker is not LimitOrderable - will skip checking positions")
-    #         return { }
-    #     if not isinstance(self.broker, OrderCancelable):
-    #         logging.warning("Broker is not OrderCancelable - will skip checking positions")
-    #         return { }  
-        
-    #     current_positions = self._query_current_positions()
-    #     logging.info(f"Will check the following positions {current_positions}")
-
-    #     tickers = [ position[keys.TICKER()] for position in current_positions if keys.TICKER() in position ]
-    #     tickers.sort()
-        
-    #     current_prices = self.broker.get_current_prices(symbols=tickers)
-        
-    #     check_results = self._check_profitable_positions(
-    #         positions=current_positions, 
-    #         current_prices=current_prices
-    #     )
-    #     results = {
-    #         "monitored_tickers": tickers,
-    #         "current_positions": check_results
-    #     }
-    #     return results
-
-    # def _check_order(self, ticker:str, order: dict, current_price: float, stop_loss_percent:float, take_profit_percent:float, running_results:dict) -> dict:
-    #     if keys.bkrdata.order.SUBORDERS() not in order:
-    #         raise ValueError(f"expected key orders to be in {order}")
-    #     if "main" not in order.get(keys.bkrdata.order.SUBORDERS()):
-    #         raise ValueError(f"expected key main to be in {order}")
-    #     if "stop_loss" not in order.get(keys.bkrdata.order.SUBORDERS()):
-    #         raise ValueError(f"expected key stop_loss to be in {order}")
-    #     if "take_profit" not in order.get(keys.bkrdata.order.SUBORDERS()):
-    #         raise ValueError(f"expected key take_profit to be in {order}")
-        
-    #     dry_run_order = order[keys.bkrdata.order.METADATA()].get(keys.bkrdata.order.metadata.DRY_RUN())
-
-    #     main_order = order[keys.bkrdata.order.SUBORDERS()].get(keys.bkrdata.order.suborders.MAIN_ORDER())
-    #     if dry_run_order:
-    #         main_order.update({"ready": True})
-    #     else:
-    #         """ NOTE 
-    #         This is mostly here in the case of the market order taking awhile to fill. 
-    #         As in - a market order is made in the signals flow, but may not be filled immediately.
-    #         So we would check it here instead. 
-    #         see if there is a way to get all orders in one call, then filter
-    #         """
-    #         main_order = self.broker.get_order(
-    #             ticker=ticker, 
-    #             order_id=main_order.get(keys.bkrdata.order.suborders.props.ID())
-    #         )
-            
-    #     if not main_order.get("ready"):
-    #         """ NOTE
-    #         this is problematic but may be ok to just wait to the next round
-    #         with the risk that we miss a price movement
-    #         """
-    #         raise ValueError(f"order is not ready yet: {main_order}")
-        
-    #     order_price = float(main_order.get(keys.bkrdata.order.suborders.props.PRICE()))
-    #     order_contracts = float(main_order.get(keys.bkrdata.order.suborders.props.CONTRACTS()))
-
-    #     entry = {
-    #                 "ticker": ticker,
-    #                 "order": order,
-    #                 "contracts": order_contracts,
-    #                 "current_price": current_price,
-    #             }
-
-    #     if current_price < order_price:
-    #         stop_loss = calculate_stop_loss(
-    #             close_price=order_price, 
-    #             stop_loss_percent=stop_loss_percent
-    #         )
-    #         if stop_loss > current_price:
-    #             """ TODO 
-    #             This method relies us detecting the current price dropping below the stop order
-    #             price - at the time of this check. It doesn't mean anything - the stop could have 
-    #             triggered already. 
-
-    #             So, use the actual stop loss orders instead of this for reliability
-    #             We need to remove them at some point and the result of the stop loss order
-    #             is probably the most reliable way. 
-    #             """
-    #             running_results["losers"].append(entry)
-    #         else:
-    #             running_results["laggards"].append(entry)
-    #     else:
-    #         take_profit = calculate_take_profit(
-    #             close_price=order_price, 
-    #             take_profit_percent=take_profit_percent
-    #         )
-    #         if current_price >= take_profit:
-    #             running_results["winners"].append(entry)
-    #         else:
-    #             running_results["leaders"].append(entry)
-
-    # def _check_position(self, position: dict, current_prices: dict, running_results: dict) -> dict:
-    #     if keys.TICKER() not in position:
-    #         raise ValueError(f"critical key {keys.TICKER()} not in stored position {position}")
-    #     if keys.BROKER_DATA() not in position:
-    #         raise ValueError(f"critical key {keys.BROKER_DATA()} not in stored position {position}")
-    #     if keys.TAKEPROFIT() not in position:
-    #         raise ValueError(f"critical key {keys.TAKEPROFIT()} not in stored position {position}")
-
-    #     order_ticker = position.get(keys.TICKER())
-        
-    #     if order_ticker not in current_prices:
-    #         raise ValueError(f"ticker is missing from current prices list {order_ticker} - {current_prices}")
-
-    #     current_price = current_prices.get(order_ticker)
-    #     stop_loss_percent = float(position.get(keys.STOPLOSS()))
-    #     take_profit_percent = float(position.get(keys.TAKEPROFIT()))
-    #     order_list = json.loads(position.get(keys.BROKER_DATA()))
-
-    #     for order in order_list:
-    #         self._check_order(
-    #             ticker=order_ticker, 
-    #             order=order, 
-    #             current_price=current_price,
-    #             stop_loss_percent=stop_loss_percent,
-    #             take_profit_percent=take_profit_percent,
-    #             running_results=running_results
-    #         )
-    
-    # def _check_profitable_positions(self, positions: list, current_prices: dict) -> dict:
-    #     logging.debug("_check_profitable_positions()")
-    #     results = {
-    #         "winners": [],
-    #         "laggards": [],
-    #         "leaders": [],
-    #         "losers": []
-    #     }
-
-    #     for position in positions:
-    #         self._check_position(
-    #             position=position,
-    #             current_prices=current_prices,
-    #             running_results=results
-    #         )
-        
-    #     for winner in results.get("winners"):
-    #         self.order_strategy(
-    #             strategy=self._strategy_from_order(
-    #                 order=winner.get(keys.bkrdata.ORDER())
-    #             )
-    #         )
-    #         results_if_any = self.order_strategy().handle_take_profit(
-    #             broker=self.broker,
-    #             order=winner.get(keys.bkrdata.ORDER()),
-    #             merchant_params={ 
-    #                 "current_price": winner.get(keys.bkrdata.TICKER()) 
-    #             }
-    #         )
-    #         results.update({ "results": results_if_any })
-
-    #     for loser in results.get("losers"):
-    #         results_if_any = self._handle_stop_loss(
-    #             order_data=loser.get(keys.bkrdata.ORDER()),
-    #             ticker=loser.get(keys.bkrdata.TICKER()),
-    #         )
-    #         results.update({ "results": results_if_any })
-
-    #     winners_and_losers = results.get("winners") + results.get("losers")
-
-    #     self._remove_orders_from_positions(
-    #         positions=positions,
-    #         removal_orders=winners_and_losers
-    #     )
-
-    #     return results
-    
-    # def _remove_orders_from_positions(self, positions: list, removal_orders: list) -> list:
-    #     removal_order_ids = [ removal[keys.bkrdata.ORDER()][keys.bkrdata.order.METADATA()].get("id") for removal in removal_orders ]
-
-    #     for position in positions:
-    #         order_list = json.loads(position.get(keys.BROKER_DATA()))
-    #         new_order_list = [ order for order in order_list if order.get(keys.bkrdata.order.METADATA()).get("id") not in removal_order_ids ]
-    #         self._update_broker_data(
-    #             position=position,
-    #             new_order_list=new_order_list
-    #         )
-    #     return positions
 
     def _query_current_positions(self) -> list: 
         table_client = self.table_service.get_table_client(table_name=self.TABLE_NAME)
@@ -466,7 +302,7 @@ class Merchant:
         """ NOTE - env will OVERRIDE signal configs """
         logging.debug(f"load_config_from_env()")
         if self.dry_run():
-            logging.warning(f"DRY RUN MODE - will not execute actual trades but will store state")
+            logging.warning(f"DRY RUN MODE - will not execute actual trades but will store state. The following are exempted: " + str(cfg.DRY_RUN_EXCEPTIONS()))
 
     def load_config_from_signal(self, signal: MerchantSignal) -> None:
         logging.debug(f"load_config_from_signal()")
@@ -604,11 +440,15 @@ class Merchant:
         self.on_order_placed.emit(self.merchant_id(), order_result)
 
     def _place_orders(self, signal: MerchantSignal) -> dict:
+        merchant_params = {}
+        if self.dry_run():
+            if not signal.ticker() in cfg.DRY_RUN_EXCEPTIONS():
+                merchant_params.update({ "dry_run": True })
         return self.order_strategy().place_orders(
             broker=self.broker,
             signal=signal,
             merchant_state=self.state,
-            merchant_params={ "dry_run": self.dry_run() }
+            merchant_params=merchant_params
         )
 
     ## common

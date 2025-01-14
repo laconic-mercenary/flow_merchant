@@ -33,19 +33,29 @@ class BracketStrategy(OrderStrategy):
         execute_market_order = broker.place_market_order_test if dry_run_mode else broker.place_market_order
         execute_limit_order = broker.place_limit_order_test if dry_run_mode else broker.place_limit_order
         
+        logging.info(f"placing market order for {contracts} contracts for {ticker}")
         market_order_rx = execute_market_order(
             ticker=ticker,
             contracts=contracts,
             action="BUY"
         )
         market_order_info = broker.standardize_market_order(market_order_rx)
+        logging.info(f"broker - market order response: {market_order_rx}")
+
+        ## TODO - consider selling here and abandoning the order
+        if keys.bkrdata.order.suborders.props.ID() not in market_order_info:
+            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.ID()} not found in market order data {market_order_info}")
+        if keys.bkrdata.order.suborders.props.PRICE() not in market_order_info:
+            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.PRICE()} not found in market order data {market_order_info}")
+        if keys.bkrdata.order.suborders.props.CONTRACTS() not in market_order_info:
+            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.CONTRACTS()} not found in market order data {market_order_info}")
 
         if not dry_run_mode:
             market_order_info = broker.get_order(
                 ticker=ticker, 
                 order_id=market_order_info.get(keys.bkrdata.order.suborders.props.ID())
             )
-
+        
         main_order_price = market_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
         main_order_contracts = market_order_info.get(keys.bkrdata.order.suborders.props.CONTRACTS())
 
@@ -54,6 +64,7 @@ class BracketStrategy(OrderStrategy):
             stop_loss_percent=stop_loss_percent
         )
 
+        logging.info(f"placing limit order for {contracts} contracts @ {stop_loss_price} for {ticker}")
         stop_loss_order_rx = execute_limit_order(
             ticker=ticker,
             action="SELL",
@@ -61,13 +72,14 @@ class BracketStrategy(OrderStrategy):
             limit=stop_loss_price
         )
         stop_loss_order_info = broker.standardize_limit_order(stop_loss_order_rx)
-
-        stop_loss_order_price = stop_loss_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
+        logging.info(f"broker - limit order response: {stop_loss_order_rx}")
 
         take_profit_price = calculate_take_profit(
             close_price=main_order_price,
             take_profit_percent=take_profit_percent
         )
+
+        stop_loss_order_price = stop_loss_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
 
         ## NOTE: this data is persisted in the merchant state
         return {

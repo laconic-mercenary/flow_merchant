@@ -34,7 +34,7 @@ class MerchantSignal:
         if not security:
             logging.error("Security information is missing")
             raise ValueError("Security information is required")
-        required_security_keys = ["ticker", "exchange", "type", "contracts", "interval", "price"]
+        required_security_keys = ["ticker", "contracts", "interval", "price"]
         for key in required_security_keys:
             if key not in security:
                 logging.error(f"Missing required security key: {key}")
@@ -45,7 +45,7 @@ class MerchantSignal:
         if not price:
             logging.error("Price information is missing in security")
             raise ValueError("Price information is required in security")
-        required_price_keys = ["high", "low", "open", "close"]
+        required_price_keys = ["close"]
         for key in required_price_keys:
             if key not in price:
                 logging.error(f"Missing required price key: {key}")
@@ -56,43 +56,46 @@ class MerchantSignal:
         if not flowmerchant:
             logging.error("Flowmerchant information is missing")
             raise ValueError("Flowmerchant information is required")
-        required_flowmerchant_keys = ["suggested_stoploss", "takeprofit_percent", "low_interval", "high_interval", "version", "action"]
+        required_flowmerchant_keys = ["low_interval", "high_interval", "action"]
         for key in required_flowmerchant_keys:
             if key not in flowmerchant:
                 logging.error(f"Missing required flowmerchant key: {key}")
                 raise ValueError(f"Missing required flowmerchant key: {key}")
+        if "suggested_stoploss" in flowmerchant or "takeprofit_percent" in flowmerchant:
+            if not "suggested_stoploss" in flowmerchant:
+                raise ValueError("suggested_stoploss is required when takeprofit_percent is present")
+            if not "takeprofit_percent" in flowmerchant:
+                raise ValueError("takeprofit_percent is required when suggested_stoploss is present")
+            float(flowmerchant["suggested_stoploss"])
+            float(flowmerchant["takeprofit_percent"])
 
         # Validate action
-        if flowmerchant["action"] not in ["buy", "sell"]:
+        if flowmerchant.get("action") not in ["buy", "sell"]:
             logging.error(f"Invalid action: {flowmerchant['action']}")
             raise ValueError("Invalid action")
 
         # Validate data types
-        try:
-            float(security["price"]["high"])
-            float(security["price"]["low"])
-            float(security["price"]["open"])
-            float(security["price"]["close"])
-        except ValueError as e:
-            logging.error(f"Price values must be numbers: {e}")
-            raise ValueError("Price values must be numbers")
-
-        if not isinstance(security["contracts"], float):
-            if not isinstance(security["contracts"], int):
+        float(security["price"].get("high", 0.0))
+        float(security["price"].get("low", 0.0))
+        float(security["price"].get("open", 0.0))
+        float(security["price"].get("close"))
+        
+        if not isinstance(security.get("contracts"), float):
+            if not isinstance(security.get("contracts"), int):
                 logging.error(f"Contracts must be numeric: {security['contracts']}")
                 raise ValueError("Contracts must be numeric")
         
-        if security["contracts"] <= 0.0:
+        if security.get("contracts") <= 0:
             logging.error(f"Contracts must be greater than 0: {security['contracts']}")
             raise ValueError("Contracts must be greater than 0")
 
-        if not isinstance(flowmerchant["version"], int):
+        if not isinstance(flowmerchant.get("version", 1), int):
             logging.error(f"Version must be an integer: {flowmerchant['version']}")
             raise ValueError("Version must be an integer")
         
         try:
-            float(flowmerchant["suggested_stoploss"])
-            float(flowmerchant["takeprofit_percent"])
+            float(flowmerchant.get("suggested_stoploss", 1.0))
+            float(flowmerchant.get("takeprofit_percent", 1.0))
         except ValueError as e:
             logging.error(f"Flowmerchant values must be numbers: {e}")
             raise ValueError("Flowmerchant values must be numbers")
@@ -111,7 +114,7 @@ class MerchantSignal:
         return self.security.get("exchange", "none")
 
     def security_type(self) -> str:
-        return self.security.get("type")
+        return self.security.get("type", "crypto")
 
     def contracts(self) -> int:
         return self.security.get("contracts")
@@ -120,26 +123,26 @@ class MerchantSignal:
         return self.security.get("interval")
 
     def high(self) -> float:
-        return float(self.security["price"].get("high"))
+        return float(self.security["price"].get("high", 0.0))
 
     def low(self) -> float:
-        return float(self.security["price"].get("low"))
+        return float(self.security["price"].get("low", 0.0))
 
     def open(self) -> float:
-        return float(self.security["price"].get("open"))
+        return float(self.security["price"].get("open", 0.0))
 
     def close(self) -> float:
         return float(self.security["price"].get("close"))
 
     # Accessor methods for flowmerchant
     def suggested_stoploss(self) -> float:
-         stop_loss = float(self.flowmerchant.get("suggested_stoploss"))
+         stop_loss = float(self.flowmerchant.get("suggested_stoploss", 1.0))
          if stop_loss < 0.0 or stop_loss > 100.0:
              raise ValueError("stop_loss must be between 0.0 and 100.0")
          return stop_loss    
 
     def takeprofit_percent(self) -> float:
-        take_profit = float(self.flowmerchant.get("takeprofit_percent"))
+        take_profit = float(self.flowmerchant.get("takeprofit_percent", 1.0))
         if take_profit < 0.0 or take_profit > 100.0:
             raise ValueError("take_profit must be between 0.0 and 100.0")
         return take_profit
@@ -148,7 +151,7 @@ class MerchantSignal:
         return int(self.flowmerchant.get("rest_interval_minutes", "15"))
 
     def version(self) -> int:
-        return int(self.flowmerchant.get("version"))
+        return int(self.flowmerchant.get("version", 1))
 
     def action(self) -> str:
         return self.flowmerchant.get("action")

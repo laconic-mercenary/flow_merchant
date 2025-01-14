@@ -103,6 +103,7 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
         if "time" not in order:
             raise ValueError(f"expected key time to be in {order}")
         return {
+            "status": order.get("status"),
             "timestamp": order.get("time"),
             "contracts": order.get("executedQty"),
             "price": order.get("price"),
@@ -333,11 +334,6 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
     def _api_get_order(self, symbol: str, order_id: str) -> dict:
         base_url = self._cfg_api_endpoint()
         endpoint = "/api/v3/order"
-        """ NOTE
-        unix_timestamp() was out of sync with the MEXC server and it was getting rejected.
-        Check on this later as we don't want to get throttled by the API for too many calls.
-        For now just use remote server time.
-        """
         remote_server_time = self._timestamp()
         params = {
             "symbol": symbol,
@@ -356,15 +352,33 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             raise ValueError(msg)
         
         return response.json()
+    
+    def _api_get_open_orders(self, symbol: str) -> dict:
+        if symbol is None or symbol == "":
+            raise ValueError("Symbol is required")
+        base_url = self._cfg_api_endpoint()
+        endpoint = "/api/v3/openOrders"
+        remote_server_time = self._timestamp()
+        params = {
+            "symbol": symbol,
+            "timestamp": remote_server_time,
+            "recvWindow": self._cfg_recv_window_ms()
+        }
+        params["signature"] = self._sign(params)
+        headers = self._request_headers()
+        response = requests.get(f"{base_url}{endpoint}", headers=headers, params=params)
+        logging.info(f"MEXC API get open orders response: {response.status_code} - {response.text}")
+        if response.status_code != 200:
+            msg = f"Failed to get open orders: {response.status_code} - {response.text}"
+            logging.error(msg)
+            raise ValueError(msg)
+        return response.json()
 
     def _api_get_orders(self, symbol: str) -> dict:
+        if symbol is None:
+            raise ValueError("Symbol cannot be None")
         base_url = self._cfg_api_endpoint()
         endpoint = "/api/v3/allOrders"
-        """ NOTE
-        unix_timestamp() was out of sync with the MEXC server and it was getting rejected.
-        Check on this later as we don't want to get throttled by the API for too many calls.
-        For now just use remote server time.
-        """
         remote_server_time = self._timestamp()
         params = {
             "symbol": symbol,
