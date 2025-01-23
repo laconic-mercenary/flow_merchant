@@ -139,6 +139,7 @@ class Merchant:
             stop_loss_order = suborders.get(keys.bkrdata.order.suborders.STOP_LOSS())
             take_profit_order = suborders.get(keys.bkrdata.order.suborders.TAKE_PROFIT())
             metadata = order.get(keys.bkrdata.order.METADATA())
+            
             is_dry_run = metadata.get(keys.bkrdata.order.metadata.DRY_RUN())
             current_price = current_prices.get(ticker)
             main_order_price = main_order.get(keys.bkrdata.order.suborders.props.PRICE())
@@ -158,35 +159,28 @@ class Merchant:
                     stop_loss_price = take_profit_price - 1.0
                     current_price = stop_loss_price - 1.0
 
-            if current_price >= take_profit_price:
-                logging.info(f"take profit {take_profit_price} hit for {ticker} at {current_price}")
-                handle_tp_result = strategy.handle_take_profit(
-                                        broker=self.broker,
-                                        order=order,
-                                        merchant_params={ 
-                                            "current_price": current_price,
-                                            "dry_run_order": is_dry_run
-                                        }
-                                    )
-                results.update({ "updated": True })
-                if handle_tp_result.get("complete", False):
-                    results["orders"]["winners"].append(order)
-                    order.update({ "remove": True })
-                else:
-                    results["orders"]["leaders"].append(order)
+            if current_price <= stop_loss_price:
+                logging.info(f"stop loss {stop_loss_price} hit for {ticker} at {current_price}")
+                self._stop_loss_reached(
+                    order=order,
+                    results=results,
+                    strategy=strategy
+                )
             else:
-                if current_price <= stop_loss_price:
-                    logging.info(f"stop loss {stop_loss_price} hit for {ticker} at {current_price}")
-                    order.update({ "remove": True })
+                if current_price >= take_profit_price:
+                    logging.info(f"take profit {take_profit_price} reached for {ticker} at {current_price}")
+                    self._take_profit_reached(
+                        order=order, 
+                        strategy=strategy, 
+                        results=results,
+                        merchant_params={ 
+                            "current_price": current_price,
+                            "dry_run_order": is_dry_run
+                        }
+                    )
                     results.update({ "updated": True })
-                    projections = order.get(keys.bkrdata.order.PROJECTIONS())
-                    stop_pnl = projections.get(keys.bkrdata.order.projections.LOSS_WITHOUT_FEES())
-                    if stop_pnl > 0.0:
-                        results["orders"]["winners"].append(order)
-                    else:
-                        results["orders"]["losers"].append(order)
                 else:
-                    if current_price >= main_order_price:
+                    if current_price > main_order_price:
                         results["orders"]["leaders"].append(order)
                     else:
                         results["orders"]["laggards"].append(order)
@@ -202,6 +196,28 @@ class Merchant:
         position.update({ keys.BROKER_DATA(): json.dumps(new_order_list) })
 
         return results
+    
+    def _take_profit_reached(self, order:dict, results:dict, strategy:OrderStrategy, merchant_params:dict) -> None:
+        handle_result = strategy.handle_take_profit(
+                                broker=self.broker,
+                                order=order,
+                                merchant_params=merchant_params
+                            )
+        if handle_result.get("complete", False):
+            results["orders"]["winners"].append(order)
+            order.update({ "remove": True })
+        else:
+            results["orders"]["leaders"].append(order)
+
+    def _stop_loss_reached(self, order:dict, results:dict, strategy:OrderStrategy) -> None:
+        order.update({ "remove": True })
+        results.update({ "updated": True })
+        projections = order.get(keys.bkrdata.order.PROJECTIONS())
+        stop_pnl = projections.get(keys.bkrdata.order.projections.LOSS_WITHOUT_FEES())
+        if stop_pnl > 0.0:
+            results["orders"]["winners"].append(order)
+        else:
+            results["orders"]["losers"].append(order)
 
     def _check_broker(self) -> bool:
         result = True

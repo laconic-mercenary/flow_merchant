@@ -3,9 +3,12 @@ from merchant_keys import keys as mkeys
 from merchant_signal import MerchantSignal
 from persona import Persona
 from personas import database, main_author, next_laggard_persona, next_leader_persona, next_loser_persona, next_winner_persona
+from transactions import multiply, calculate_percent_diff
 
 import datetime
 import logging
+import io
+import traceback
 
 class MerchantReporting:
 
@@ -34,8 +37,12 @@ class MerchantReporting:
                     ),
                     fields=[
                         Field(
-                            name="Traceback",
+                            name="Message",
                             value=str(exc)
+                        ),
+                        Field(
+                            name="Traceback",
+                            value=self._traceback_as_str(exc)
                         )
                     ]
                 )
@@ -46,8 +53,12 @@ class MerchantReporting:
         pass
 
     def report_state_changed(self, merchant_id: str, status: str, state: dict) -> None:
+        reportable_states = ["buying", "resting"]
+        status_lower = status.lower()
+        if status_lower not in reportable_states:
+            return
         msg = f"Merchant {merchant_id} is now {status}"
-        if status.upper() == "RESTING":
+        if status_lower == "resting":
             rest_interval_minutes = int(state[mkeys.REST_INTERVAL()])
             msg += f": for {rest_interval_minutes} minute(s)"
         persona_db = database()
@@ -79,19 +90,70 @@ class MerchantReporting:
 
         main_price = main_order.get(mkeys.bkrdata.order.suborders.props.PRICE())
         main_contracts = main_order.get(mkeys.bkrdata.order.suborders.props.CONTRACTS())
+        main_id = main_order.get(mkeys.bkrdata.order.suborders.props.ID())
         stop_price = stop_loss_order.get(mkeys.bkrdata.order.suborders.props.PRICE())
         take_profit_price = take_profit_order.get(mkeys.bkrdata.order.suborders.props.PRICE())
 
-        content = "[DRY RUN MODE] " if order_dry_run else ""
-        content += f"New Order: {ticker}, @ {main_price} x {main_contracts} (total {main_price * main_contracts}), stop @ {stop_price}, profit @ {take_profit_price}"
+        main_total = multiply(main_price, main_contracts)
 
+        main_price = round(main_price, 8)
+        main_total = round(main_total, 8)
+        stop_price = round(stop_price, 8)
+        take_profit_price = round(take_profit_price, 8)
+
+        description = "[DRY RUN MODE] This is not a real order." if order_dry_run else "I have placed an order with the broker."
+        
         persona_db = database()
         author = main_author(db=persona_db)
+
         DiscordClient().send_webhook_message(msg=WebhookMessage(
             username=author.name,
             avatar_url=author.avatar_url,
-            content=content,
-            embeds=[]
+            content=f"New Order - {ticker}",
+            embeds=[
+                Embed(
+                    author=Author(
+                        name=author.name,
+                        icon_url=author.avatar_url
+                    ),
+                    title="New order placed",
+                    description=description,
+                    color=colors.BLUE(),
+                    footer=Footer(
+                        text="To check the progress of the order, run the check_positions function.",
+                        icon_url=author.avatar_url
+                    ),
+                    thumbnail=Thumbnail(
+                        url=author.avatar_url
+                    ),
+                    fields=[
+                        Field(
+                            name="Ticker",
+                            value=ticker
+                        ),
+                        Field(
+                            name="Main price",
+                            value=str(main_price)
+                        ),
+                        Field(
+                            name="Main contracts",
+                            value=str(main_contracts)
+                        ),
+                        Field(
+                            name="Stop price",
+                            value=f"{stop_price} ({calculate_percent_diff(main_price, stop_price) * 100}%)"
+                        ),
+                        Field(
+                            name="Take profit price",
+                            value=f"{take_profit_price} ({calculate_percent_diff(take_profit_price, main_price) * 100}%)"
+                        ),
+                        Field(
+                            name="Broker order ID",
+                            value=main_id
+                        )
+                    ]
+                )
+            ]
         ))
 
     def report_check_results(self, results:dict) -> None:
@@ -129,6 +191,10 @@ class MerchantReporting:
             )
     
     def _embed(self, author:str, author_icon:str, title:str, desc:str, color:int, footer:str, footer_icon:str, thumbnail:str, positions:list, prices:dict) -> Embed:
+        icon_stop_loss = "\U0001F6D1"
+        icon_take_profit = "\U0001F3C6"
+        icon_entry = "\U0001F4B5"
+        
         fields = []
         for position in positions:
             if "orders" not in position: 
@@ -157,26 +223,33 @@ class MerchantReporting:
 
             take_profit_price = take_profit_order.get("price")
 
-            main_total = main_price * main_contracts
+            main_total = multiply(main_price, main_contracts)
 
-            main_price = round(main_price, 5)
-            main_contracts = round(main_contracts, 5)
-            main_total = round(main_total, 5)
-            stop_price = round(stop_price, 5)
-            potential_loss = round(potential_loss, 5)
-            take_profit_price = round(take_profit_price, 5)
-            potential_profit = round(potential_profit, 5)
-            current_price = round(current_price, 5)
+            main_price = round(main_price, 7)
+            main_contracts = round(main_contracts, 7)
+            main_total = round(main_total, 7)
+            stop_price = round(stop_price, 7)
+            potential_loss = round(potential_loss, 7)
+            take_profit_price = round(take_profit_price, 7)
+            potential_profit = round(potential_profit, 7)
+            current_price = round(current_price, 7)
 
-            sell_now_profit_loss = round((current_price * main_contracts) - main_total, 5)
+            stop_price_per_diff = calculate_percent_diff(main_price, stop_price) * 100.0
+            stop_price_per_diff = round(stop_price_per_diff, 3)
+            take_profit_per_diff = calculate_percent_diff(main_price, take_profit_price) * 100.0
+            take_profit_per_diff = round(take_profit_per_diff, 3)
+            sell_now_per_diff = calculate_percent_diff(current_price, main_price) * 100.0
+            sell_now_per_diff = round(sell_now_per_diff, 3)
+
+            sell_now_profit_loss = round(multiply(current_price, main_contracts) - main_total, 7)
             sell_now_msg = f"LOSS of {sell_now_profit_loss}" if sell_now_profit_loss < 0 else f"PROFIT of {sell_now_profit_loss}"
-
+            
             fields.append(Field(
                 name=f"{ticker}",
-                value=f"Entry @ {main_price} x {main_contracts} = {main_total} -- STOP LOSS @ {stop_price} for {potential_loss} -- TAKE PROFIT @ {take_profit_price} for {potential_profit} -- CURRENT PRICE @ {current_price}, selling now would be a {sell_now_msg}"
+                value=f"{icon_entry} @ {main_price} x {main_contracts} = {main_total}\n{icon_stop_loss} @ {stop_price} ({stop_price_per_diff}%) for {potential_loss}\n{icon_take_profit} @ {take_profit_price} ({take_profit_per_diff}%) for {potential_profit}\nCURRENT PRICE @ {current_price} ({sell_now_per_diff}%), selling now would be a {sell_now_msg}"
             ))
 
-        new_embed = Embed(
+        return Embed(
             author=Author(
                 name=author,
                 icon_url=author_icon
@@ -188,13 +261,9 @@ class MerchantReporting:
                 text=footer,
                 icon_url=footer_icon
             ),
-            thumbnail=Thumbnail(
-                url=thumbnail
-            ),
+            thumbnail=Thumbnail(url=thumbnail),
             fields=fields
         )
-
-        return new_embed
     
     def _send_check_result(self, winners:list, losers:list, leaders:list, laggards:list, current_prices:dict, elapsed_time_ms:int):
         embeds = []
@@ -227,7 +296,7 @@ class MerchantReporting:
                 author_icon=leader_persona.avatar_url,
                 title=f"{leader_persona.name} says: {leader_persona.quote}",
                 desc="Here are the LEADERS:",
-                color=colors.BLUE(),
+                color=colors.LIGHT_BLUE(),
                 footer=leader_persona.advice,
                 footer_icon=leader_persona.avatar_url,
                 thumbnail=leader_persona.portrait_url,
@@ -242,7 +311,7 @@ class MerchantReporting:
                 author=laggard_persona.name,
                 author_icon=laggard_persona.avatar_url,
                 title=f"{laggard_persona.name} says: {laggard_persona.quote}",
-                desc="These are in the negative:",
+                desc="These are currently negative:",
                 color=colors.YELLOW(),
                 footer=laggard_persona.advice,
                 footer_icon=laggard_persona.avatar_url,
@@ -269,12 +338,12 @@ class MerchantReporting:
             embeds.append(entry)
 
         icon_report = "\U0001F4CA"
-        icon_clock = "\U000023F0"
-        icon_list = "\U0001F447"
-        icon_stopwatch =  "\U000023F1"
+        icon_timestamp = "\U0001F552"
+        icon_positions = "\U0001F4C8"
+        icon_elapsed =  "\U000023F3"
 
         current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        main_message = f"{icon_report} **REPORT RESULTS**\n{icon_clock} *Time*: __{current_time}__ \n{icon_list} *Positions*: "
+        main_message = f"{icon_report} **REPORT RESULTS**\n {icon_timestamp} *Time (UTC)*: __{current_time}__ \n {icon_positions} *Positions*: "
         if winners_ct != 0:
             main_message += f"{winners_ct} winner(s) "
         if leaders_ct != 0:
@@ -283,16 +352,20 @@ class MerchantReporting:
             main_message += f"{laggards_ct} laggard(s) "
         if losers_ct != 0:
             main_message += f"{losers_ct} loser(s) "
-        main_message += f"\n{icon_stopwatch} *Elapsed*: {elapsed_time_ms}ms"
+        main_message += f"\n {icon_elapsed} *Elapsed*: {elapsed_time_ms}ms"
         
-        author = main_author()
+        db = database()
+        author = main_author(db=db)
         msg = WebhookMessage(
             username=author.name,
             avatar_url=author.avatar_url,
             content=main_message,
             embeds=embeds
         )
-
         logging.info(f"Sending Discord payload: {msg}")
-        discord = DiscordClient()
-        discord.send_webhook_message(msg=msg)
+        DiscordClient().send_webhook_message(msg=msg)
+
+    def _traceback_as_str(self, ex:Exception) -> str:
+        out = io.StringIO()
+        traceback.print_exception(ex, file=out)
+        return out.getvalue().strip()

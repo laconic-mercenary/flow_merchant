@@ -29,6 +29,10 @@ class colors:
     def YELLOW():
         return 16705372
     
+    @staticmethod
+    def LIGHT_BLUE():
+        return 1752220
+    
 class Author(dict):
     def __init__(self, name:str, icon_url:str):
         super().__init__(name=name, icon_url=icon_url)

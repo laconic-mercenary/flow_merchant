@@ -24,6 +24,14 @@ def calculate_take_profit(close_price: float, take_profit_percent: float) -> flo
     take_profit_percent = _to_real_percent(take_profit_percent)
     return multiply(close_price, take_profit_percent)
 
+def calculate_percent_diff(a: float, b: float) -> float:
+    if a is None or b is None:
+        raise ValueError("Cannot calculate percent diff of None values")
+    if a == b:
+        return 0.0
+    x = (a - b) / b
+    return abs(x)
+
 def calculate_pnl_from_order(order: dict, sell_amount:float=None, current_price:float=None) -> dict:
     suborders = order.get(mkeys.bkrdata.order.SUBORDERS())
     main_order = suborders.get(mkeys.bkrdata.order.suborders.MAIN_ORDER())

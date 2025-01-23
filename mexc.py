@@ -58,8 +58,8 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             "id": market_order_result.get("clientOrderId"),
             "broker_order_id": market_order_result.get("orderId"),
             "timestamp": market_order_result.get("transactTime"),
-            "contracts": market_order_result.get("origQty"),
-            "price": market_order_result.get("price")
+            "contracts": float(market_order_result.get("origQty")),
+            "price": float(market_order_result.get("price"))
         }
     
     def place_limit_order(self, ticker: str, action: str, contracts: float, limit: float, broker_params: dict = {}) -> dict:
@@ -87,8 +87,8 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             "id": limit_order_result.get("clientOrderId"),
             "broker_order_id": limit_order_result.get("orderId"),
             "timestamp": limit_order_result.get("transactTime"),
-            "contracts": limit_order_result.get("origQty"),
-            "price": limit_order_result.get("price")
+            "contracts": float(limit_order_result.get("origQty")),
+            "price": float(limit_order_result.get("price"))
         }
     
     def get_order(self, ticker: str, order_id: str) -> dict:
@@ -103,10 +103,11 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
         if "time" not in order:
             raise ValueError(f"expected key time to be in {order}")
         return {
+            "id": order_id,
             "status": order.get("status"),
             "timestamp": order.get("time"),
-            "contracts": order.get("executedQty"),
-            "price": order.get("price"),
+            "contracts": float(order.get("executedQty")),
+            "price": float(order.get("price")),
             "ready": True if order.get("status").upper() == "FILLED" else False
         }
     
@@ -141,11 +142,11 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             "clientOrderId": dryrun_tracking_id,
             "orderId": dryrun_tracking_id,
             "transactTime": unix_timestamp_ms(),
-            "origQty": contracts,
-            "price": current_prices.get(ticker)
+            "origQty": float(contracts),
+            "price": float(current_prices.get(ticker))
         }
 
-    def place_limit_order_test(self, ticker, action, contracts, limit, broker_params:dict = {}, tracking_id:str = None) -> dict:
+    def place_limit_order_test(self, ticker:str, action:str, contracts:float, limit:float, broker_params:dict = {}, tracking_id:str = None) -> dict:
         results = self._place_limit_order(
             ticker=ticker, 
             action=action, 

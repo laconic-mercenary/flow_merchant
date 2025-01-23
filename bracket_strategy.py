@@ -4,7 +4,7 @@ from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelab
 from live_capable import LiveCapable
 from merchant_signal import MerchantSignal
 from merchant_keys import keys
-from transactions import calculate_stop_loss, calculate_take_profit
+from transactions import calculate_stop_loss, calculate_take_profit, calculate_pnl_from_order
 from utils import unix_timestamp_secs, unix_timestamp_ms
 
 import logging
@@ -45,10 +45,6 @@ class BracketStrategy(OrderStrategy):
         ## TODO - consider selling here and abandoning the order
         if keys.bkrdata.order.suborders.props.ID() not in market_order_info:
             raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.ID()} not found in market order data {market_order_info}")
-        if keys.bkrdata.order.suborders.props.PRICE() not in market_order_info:
-            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.PRICE()} not found in market order data {market_order_info}")
-        if keys.bkrdata.order.suborders.props.CONTRACTS() not in market_order_info:
-            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.CONTRACTS()} not found in market order data {market_order_info}")
 
         if not dry_run_mode:
             market_order_info = broker.get_order(
@@ -56,6 +52,13 @@ class BracketStrategy(OrderStrategy):
                 order_id=market_order_info.get(keys.bkrdata.order.suborders.props.ID())
             )
         
+        if keys.bkrdata.order.suborders.props.ID() not in market_order_info:
+            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.ID()} not found in market order data {market_order_info}")
+        if keys.bkrdata.order.suborders.props.PRICE() not in market_order_info:
+            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.PRICE()} not found in market order data {market_order_info}")
+        if keys.bkrdata.order.suborders.props.CONTRACTS() not in market_order_info:
+            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.CONTRACTS()} not found in market order data {market_order_info}")
+
         main_order_price = market_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
         main_order_contracts = market_order_info.get(keys.bkrdata.order.suborders.props.CONTRACTS())
 
@@ -72,8 +75,12 @@ class BracketStrategy(OrderStrategy):
             limit=stop_loss_price
         )
         stop_loss_order_info = broker.standardize_limit_order(stop_loss_order_rx)
-        logging.info(f"broker - limit order response: {stop_loss_order_rx}")
-
+    
+        if keys.bkrdata.order.suborders.props.ID() not in stop_loss_order_info:
+            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.ID()} not found in stop loss order data {stop_loss_order_info}")
+        if keys.bkrdata.order.suborders.props.PRICE() not in stop_loss_order_info:
+            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.PRICE()} not found in stop loss order data {stop_loss_order_info}")
+        
         take_profit_price = calculate_take_profit(
             close_price=main_order_price,
             take_profit_percent=take_profit_percent
@@ -82,23 +89,26 @@ class BracketStrategy(OrderStrategy):
         stop_loss_order_price = stop_loss_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
 
         ## NOTE: this data is persisted in the merchant state
-        return {
+        new_order = {
             keys.bkrdata.order.METADATA(): {
                 keys.bkrdata.order.metadata.ID(): str(uuid.uuid4()),
                 "time_created": unix_timestamp_ms(),
                 keys.bkrdata.order.metadata.DRY_RUN(): dry_run_mode,
+                "high_interval": signal.high_interval(),
+                "low_interval": signal.low_interval(),
+                "version": signal.version()
             },
             keys.bkrdata.TICKER(): ticker,
             keys.bkrdata.order.SUBORDERS(): {
                 keys.bkrdata.order.suborders.MAIN_ORDER(): {
-                    keys.bkrdata.order.suborders.props.ID(): market_order_info.get("id"),
+                    keys.bkrdata.order.suborders.props.ID(): market_order_info.get(keys.bkrdata.order.suborders.props.ID()),
                     keys.bkrdata.order.suborders.props.API_RX(): market_order_rx,
                     keys.bkrdata.order.suborders.props.TIME(): market_order_info.get("timestamp"),
                     keys.bkrdata.order.suborders.props.CONTRACTS(): main_order_contracts,
                     keys.bkrdata.order.suborders.props.PRICE(): main_order_price,
                 },
                 keys.bkrdata.order.suborders.STOP_LOSS(): {
-                    keys.bkrdata.order.suborders.props.ID(): stop_loss_order_info.get("id"),
+                    keys.bkrdata.order.suborders.props.ID(): stop_loss_order_info.get(keys.bkrdata.order.suborders.props.ID()),
                     keys.bkrdata.order.suborders.props.API_RX(): stop_loss_order_rx,
                     keys.bkrdata.order.suborders.props.TIME(): stop_loss_order_info.get("timestamp"),
                     keys.bkrdata.order.suborders.props.PRICE(): stop_loss_order_price
@@ -106,12 +116,16 @@ class BracketStrategy(OrderStrategy):
                 keys.bkrdata.order.suborders.TAKE_PROFIT(): {
                     keys.bkrdata.order.suborders.props.PRICE(): take_profit_price
                 }
-            },
-            keys.bkrdata.order.PROJECTIONS(): {
-                "profit_without_fees": (take_profit_price * main_order_contracts) - (main_order_price * main_order_contracts),
-                "loss_without_fees" : (stop_loss_price * main_order_contracts) - (main_order_price * main_order_contracts)
             }
         }
+        pnl = calculate_pnl_from_order(order=new_order)
+        new_order.update({
+            keys.bkrdata.order.PROJECTIONS(): {
+                "profit_without_fees": pnl.get("profit_without_fees"),
+                "loss_without_fees" : pnl.get("loss_without_fees")
+            }
+        })
+        return new_order
     
     def handle_take_profit(self, broker:Broker, order:dict, merchant_params:dict = {}) -> dict:
         if not isinstance(broker, MarketOrderable):
