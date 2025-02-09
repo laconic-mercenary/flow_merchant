@@ -1,5 +1,6 @@
 from merchant_signal import MerchantSignal
 from merchant_keys import keys as mkeys
+from merchant_order import Order
 
 def multiply(a: float, b: float) -> float:
     if a is None or b is None:
@@ -32,7 +33,25 @@ def calculate_percent_diff(a: float, b: float) -> float:
     x = (a - b) / b
     return abs(x)
 
-def calculate_pnl_from_order(order: dict, sell_amount:float=None, current_price:float=None) -> dict:
+def calculate_pnl_from_order(order:Order, sell_amount:float=None, current_price:float=None) -> dict:
+    net_value = multiply(order.sub_orders.main_order.contracts, order.sub_orders.main_order.price)
+    stop_loss_value = multiply(order.sub_orders.main_order.contracts, order.sub_orders.stop_loss.price)
+    take_profit_value = multiply(order.sub_orders.main_order.contracts, order.sub_orders.take_profit.price)
+    profit_wout_fees = take_profit_value - net_value
+    loss_wout_fees = stop_loss_value - net_value
+    results = {
+        "profit_without_fees": profit_wout_fees,
+        "loss_without_fees": loss_wout_fees,
+        "net_value": net_value,
+        "stop_loss_value": stop_loss_value,
+        "take_profit_value": take_profit_value
+    }
+    if current_price is not None:
+        current_value = multiply(order.sub_orders.main_order.contracts, current_price)
+        results["current_without_fees"] = current_value - net_value
+    return results
+
+def calculate_pnl_from_order2(order: dict, sell_amount:float=None, current_price:float=None) -> dict:
     suborders = order.get(mkeys.bkrdata.order.SUBORDERS())
     main_order = suborders.get(mkeys.bkrdata.order.suborders.MAIN_ORDER())
     stop_loss_order = suborders.get(mkeys.bkrdata.order.suborders.STOP_LOSS())

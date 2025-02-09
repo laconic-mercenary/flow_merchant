@@ -5,17 +5,14 @@ import azure.functions as func
 from azure.data.tables import TableServiceClient, TableClient
 
 from broker_repository import BrokerRepository
-from discord import DiscordClient
-from events import EventLoggable
-from ledger import Ledger, Entry, Signer
 from merchant_signal import MerchantSignal
+from merchant_order import Order
 from merchant import Merchant
-from merchant import cfg as merchant_cfg
-from merchant_keys import keys as mkeys
 from merchant_reporting import MerchantReporting
 from server import *
 from table_ledger import TableLedger, HashSigner
-from utils import unix_timestamp_secs
+from ledger_analytics import LedgerAnalytics
+from utils import roll_dice_10percent as roll_dice
 
 import command_app
 
@@ -152,62 +149,46 @@ def report_problem(msg:str, exc:Exception, additional_data:dict = {}) -> None:
     MerchantReporting().report_problem(msg=msg, exc=exc)
 
 def merchant_state_changed(merchant_id: str, status: str, state: dict) -> None:
-    MerchantReporting().report_state_changed(merchant_id, status, state)
+    try:
+        MerchantReporting().report_state_changed(merchant_id, status, state)
+    except Exception as e:
+        logging.error(f"error reporting state change - {e}", exc_info=True)
+        report_problem(msg=f"error reporting state change", exc=e)
 
 def merchant_signal_received(merchant_id: str, signal: MerchantSignal) -> None:
-    MerchantReporting().report_signal_received(signal)
-    
-def merchant_order_placed(merchant_id: str, order_data: dict) -> None:
-    MerchantReporting().report_order_placed(order_data)
+    try:
+        MerchantReporting().report_signal_received(signal)
+    except Exception as e:
+        logging.error(f"error reporting signal received - {e}", exc_info=True)
+        report_problem(msg=f"error reporting signal received", exc=e)
+
+def merchant_order_placed(merchant_id: str, order_data: Order) -> None:
+    try:
+        MerchantReporting().report_order_placed(order_data)
+    except Exception as e:
+        logging.error(f"error reporting order placed - {e}", exc_info=True)
+        report_problem(msg=f"error reporting order placed", exc=e)
 
 def merchant_positions_checked(results: dict) -> None:
-    MerchantReporting().report_check_results(results)
-    current_positions = results.get("positions")
-    winners = current_positions.get("winners")
-    losers = current_positions.get("losers")
+    reporting = MerchantReporting()
     try:
-        write_ledger(positions=winners + losers)
+        reporting.report_check_results(results)
+        current_positions = results.get("positions")
+        winners = current_positions.get("winners")
+        losers = current_positions.get("losers")    
+        with connect_table_service() as table_service:
+            table_name = "fmorderledger"
+            table_client = table_service.create_table_if_not_exists(table_name=table_name)
+            table_ledger = TableLedger(table_client=table_client)
+            table_signer = HashSigner()
+            
+            ## TODO support a list of ledgers
+            reporting.report_to_ledger(positions=winners + losers, ledger=table_ledger, signer=table_signer)
+            
+            ## only trigger a performance report occassionally due to it's processurally expensive nature
+            if roll_dice():
+                analytics = LedgerAnalytics()
+                reporting.report_ledger_performance(ledger=table_ledger, signer=table_signer, analytics=analytics)
     except Exception as e:
         logging.error(f"error writing ledger - {e}", exc_info=True)
         report_problem(msg=f"error writing ledger", exc=e)
-
-def write_ledger(positions:list) -> None:
-    with connect_table_service() as table_service:
-        table_name = "fmorderledger"
-        table_client = table_service.create_table_if_not_exists(table_name=table_name)
-        table_ledger = TableLedger(table_client=table_client)
-        table_signer = HashSigner()
-        for position in positions:
-            if mkeys.bkrdata.order.PROJECTIONS() not in position:
-                raise ValueError(f"expected key '{mkeys.bkrdata.order.PROJECTIONS()}' in position {position}")
-            if mkeys.bkrdata.order.TICKER() not in position:
-                raise ValueError(f"expected key '{mkeys.bkrdata.order.TICKER()}' in position {position}")
-            if mkeys.bkrdata.order.METADATA() not in position:
-                raise ValueError(f"expected key '{mkeys.bkrdata.order.METADATA()}' in position {position}")
-
-            metadata = position.get(mkeys.bkrdata.order.METADATA())
-            ticker = position.get(mkeys.bkrdata.order.TICKER())
-            projections = position.get(mkeys.bkrdata.order.PROJECTIONS())
-
-            ## ! TODO - only accounts for trailing stop strategy !
-            amount = projections.get("loss_without_fees")
-            dry_run = metadata.get(mkeys.bkrdata.order.metadata.DRY_RUN())
-
-            last_entry = table_ledger.get_latest_entry()
-            new_entry = Entry(
-                name=ticker,
-                amount=amount,
-                hash=None,
-                test=dry_run,
-                timestamp=unix_timestamp_secs()
-            )
-            new_entry.hash = table_signer.sign(new_entry=new_entry, prev_entry=last_entry)
-            table_ledger.log(entry=new_entry)
-
-        deleted_logs = table_ledger.purge_old_logs()
-        if len(deleted_logs) != 0:
-            logging.info(f"removed the following from the ledger (expired): {deleted_logs}")
-        
-        bad_entries = table_ledger.verify_integrity(signer=table_signer)
-        if len(bad_entries) != 0:
-            logging.error(f"bad entries found in ledger: {bad_entries}")

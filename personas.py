@@ -33,7 +33,7 @@ def database() -> Database:
             Persona(
                 name="2B",
                 avatar_url="https://i.imgur.com/9dVBduL.jpeg",
-                portrait_url="https://i.imgur.com/lRDT0CI.jpeg",
+                portrait_url="https://i.imgur.com/GZ9lYbV.jpeg",
                 quote="STAY ON TARGET",
                 advice="Consider selling these - take what you can get."
             )
@@ -42,7 +42,7 @@ def database() -> Database:
             Persona(
                 name="KOS-MOS",
                 avatar_url="https://i.imgur.com/xnAyrOR.gif",
-                portrait_url="https://i.imgur.com/trBuZiN.png",
+                portrait_url="https://i.imgur.com/dPtU0TQ.jpeg",
                 quote="Target acquired.",
                 advice="Get rid of these - or I will."
             )
@@ -66,17 +66,17 @@ def _rand(collection:list[Persona]) -> Persona:
     index = random.randint(a=min, b=max)
     return collection[index]
 
-def main_author(db:Database) -> Persona:
+def main_author(db:Database = database()) -> Persona:
     return db.author
 
-def next_winner_persona(db:Database) -> Persona:
+def next_winner_persona(db:Database = database()) -> Persona:
     return _rand(db.winners)
 
-def next_leader_persona(db:Database) -> Persona:
+def next_leader_persona(db:Database = database()) -> Persona:
     return _rand(db.leaders)
 
-def next_laggard_persona(db:Database) -> Persona:
+def next_laggard_persona(db:Database = database()) -> Persona:
     return _rand(db.laggards)
 
-def next_loser_persona(db:Database) -> Persona:
+def next_loser_persona(db:Database = database()) -> Persona:
     return _rand(db.losers)

@@ -1,20 +1,24 @@
 from discord import DiscordClient, WebhookMessage, Thumbnail, Author, Footer, Field, Embed, colors
+from ledger import Ledger, Entry, Signer
+from ledger_analytics import LedgerAnalytics, LedgerAnalysis, PerformanceView, SpreadData, IntervalData, TickerData
 from merchant_keys import keys as mkeys
+from merchant_order import Order
 from merchant_signal import MerchantSignal
 from persona import Persona
 from personas import database, main_author, next_laggard_persona, next_leader_persona, next_loser_persona, next_winner_persona
 from transactions import multiply, calculate_percent_diff
+from utils import unix_timestamp_secs, unix_timestamp_ms, consts as utils_consts
 
 import datetime
 import logging
 import io
 import traceback
 
+
 class MerchantReporting:
 
     def report_problem(self, msg:str, exc:Exception) -> None:
-        persona_db = database()
-        author = main_author(db=persona_db)
+        author = main_author(db=database())
         DiscordClient().send_webhook_message(msg=WebhookMessage(
             username=author.name,
             avatar_url=author.avatar_url,
@@ -61,8 +65,7 @@ class MerchantReporting:
         if status_lower == "resting":
             rest_interval_minutes = int(state[mkeys.REST_INTERVAL()])
             msg += f": for {rest_interval_minutes} minute(s)"
-        persona_db = database()
-        author = main_author(db=persona_db)
+        author = main_author(db=database())
         DiscordClient().send_webhook_message(msg=WebhookMessage(
             username=author.name,
             avatar_url=author.avatar_url,
@@ -70,36 +73,29 @@ class MerchantReporting:
             embeds=[]
         ))
 
-    def report_order_placed(self, order:dict) -> None:
-        if not mkeys.bkrdata.order.METADATA() in order:
-            raise ValueError("order is missing metadata")
-        if not mkeys.bkrdata.order.SUBORDERS() in order:
-            raise ValueError("order is missing suborders")
-        if not mkeys.bkrdata.order.PROJECTIONS() in order:
-            raise ValueError("order is missing projections")
-        
-        ticker = order.get(mkeys.bkrdata.order.TICKER())
-        metadata = order.get(mkeys.bkrdata.order.METADATA())
-        suborders = order.get(mkeys.bkrdata.order.SUBORDERS())
-        projections = order.get(mkeys.bkrdata.order.PROJECTIONS())
+    def report_order_placed(self, order:Order) -> None:
+        ticker = order.ticker
+        order_dry_run = order.metadata.is_dry_run
+        main_order = order.sub_orders.main_order
+        stop_loss_order = order.sub_orders.stop_loss
+        take_profit_order = order.sub_orders.take_profit
 
-        order_dry_run = metadata.get(mkeys.bkrdata.order.metadata.DRY_RUN())
-        main_order = suborders.get(mkeys.bkrdata.order.suborders.MAIN_ORDER())
-        stop_loss_order = suborders.get(mkeys.bkrdata.order.suborders.STOP_LOSS())
-        take_profit_order = suborders.get(mkeys.bkrdata.order.suborders.TAKE_PROFIT())
-
-        main_price = main_order.get(mkeys.bkrdata.order.suborders.props.PRICE())
-        main_contracts = main_order.get(mkeys.bkrdata.order.suborders.props.CONTRACTS())
-        main_id = main_order.get(mkeys.bkrdata.order.suborders.props.ID())
-        stop_price = stop_loss_order.get(mkeys.bkrdata.order.suborders.props.PRICE())
-        take_profit_price = take_profit_order.get(mkeys.bkrdata.order.suborders.props.PRICE())
+        main_price = main_order.price
+        main_contracts = main_order.contracts
+        main_id = main_order.id
+        stop_price = stop_loss_order.price
+        take_profit_price = take_profit_order.price
 
         main_total = multiply(main_price, main_contracts)
+        stop_price_per = calculate_percent_diff(main_price, stop_price)
+        take_profit_price_per = calculate_percent_diff(main_price, take_profit_price)
 
         main_price = round(main_price, 8)
         main_total = round(main_total, 8)
         stop_price = round(stop_price, 8)
         take_profit_price = round(take_profit_price, 8)
+        stop_price_per = round(stop_price_per, 3)
+        take_profit_price_per = round(take_profit_price_per, 3)
 
         description = "[DRY RUN MODE] This is not a real order." if order_dry_run else "I have placed an order with the broker."
         
@@ -141,11 +137,11 @@ class MerchantReporting:
                         ),
                         Field(
                             name="Stop price",
-                            value=f"{stop_price} ({calculate_percent_diff(main_price, stop_price) * 100}%)"
+                            value=f"{stop_price} ({stop_price_per * 100}%)"
                         ),
                         Field(
                             name="Take profit price",
-                            value=f"{take_profit_price} ({calculate_percent_diff(take_profit_price, main_price) * 100}%)"
+                            value=f"{take_profit_price} ({take_profit_price_per * 100}%)"
                         ),
                         Field(
                             name="Broker order ID",
@@ -189,7 +185,110 @@ class MerchantReporting:
                 current_prices=current_prices,
                 elapsed_time_ms=elapsed_ms
             )
-    
+
+    def report_ledger_performance(self, ledger:Ledger, signer:Signer, analytics:LedgerAnalytics) -> None:
+        deleted_logs = ledger.purge_old_logs()
+        if len(deleted_logs) != 0:
+            logging.info(f"removed {len(deleted_logs)} expired logs from the ledger: {deleted_logs}")
+        
+        bad_entries = ledger.verify_integrity(signer=signer)
+        if len(bad_entries) != 0:
+            msg = f"bad entries found in ledger: {bad_entries}"
+            logging.critical(msg)
+            self.report_problem(msg=msg, exc=Exception(msg))
+
+        now_ts = unix_timestamp_secs()
+        one_week_ago_ts = now_ts - utils_consts.ONE_WEEK_IN_SECS()
+        entries = ledger.get_entries(name=None, from_timestamp=one_week_ago_ts, to_timestamp=now_ts)
+        
+        if len(entries) == 0:
+            logging.info(f"No entries found in ledger - will skip analytics and performance reporting")
+        else:
+            analysis = analytics.performance_by_interval(entries=entries)
+            persona = main_author(db=database())
+            DiscordClient().send_webhook_message(msg=WebhookMessage(
+                username=persona.name,
+                avatar_url=persona.avatar_url,
+                content="Performance Report",
+                embeds=self._embeds_from_analysis(analysis=analysis)
+            ))
+
+    def _field_from_analysis(self, interval_performance:PerformanceView.IntervalPerformance) -> Field:
+        new_line = "\n"
+        with io.StringIO(initial_value="", newline=new_line) as field_report:
+            field_report.write(f"Top Spreads, Top Tickers in Spread{new_line}")
+            current_interval = interval_performance.interval
+            count = 1
+            for spread_performance in interval_performance.spreads:
+                if count > 5:
+                    break
+                current_spread:SpreadData = spread_performance.spread
+                tickers = spread_performance.tickers
+                top_tickers = ""
+                for ticker in tickers[:min(len(tickers), 5)]:
+                    top_tickers += f"{ticker.ticker()} ({round(ticker.performance.win_pct, 3)}% - {round(ticker.performance.total_pnl, 5)}), "
+                row = f"{count}. {current_spread.take_profit}/{current_spread.stop_loss} {top_tickers} {new_line}" 
+                field_report.write(row)
+                count += 1
+
+            return Field(
+                name=f"{current_interval.high_interval}/{current_interval.low_interval} (high/low)",
+                value=field_report.getvalue()
+            )
+
+    def _embeds_from_analysis(self, analysis:LedgerAnalysis) -> list[Embed]:
+        embeds = [ ]
+        performance = PerformanceView(ledger_analysis=analysis)
+        profits = performance.profits_by_category()
+        author = main_author(db=database())
+        fields = [ ]
+        for interval_profit in profits[:min(len(profits), 5)]:
+            fields.append(self._field_from_analysis(interval_performance=interval_profit))
+        embeds.append(Embed(
+            author=Author(
+                name=author.name,
+                icon_url=author.avatar_url
+            ),
+            title=f"By Interval",
+            description=f"Profits by the leading 5 intervals (high / low)",
+            color=colors.BLUE(),
+            fields=fields,
+            footer=Footer(
+                text=f"End",
+                icon_url=author.avatar_url
+            ),
+            thumbnail=Thumbnail(
+                url=author.avatar_url
+            )
+        ))
+
+        return embeds
+
+    def report_to_ledger(self, positions:list[dict], ledger:Ledger, signer:Signer) -> None:
+        if ledger is None:
+            raise ValueError("ledger is None")
+        if signer is None:
+            raise ValueError("signer is None")
+        if positions is None:
+            raise ValueError("positions is None")
+        for position in positions:
+            order = Order.from_dict(position)
+            
+            ## ! TODO - only accounts for trailing stop strategy !
+            amount = order.projections.loss_without_fees
+
+            last_entry = ledger.get_latest_entry()
+            new_entry = Entry(
+                name=order.ticker,
+                amount=amount,
+                hash=None,
+                test=order.metadata.is_dry_run,
+                timestamp=unix_timestamp_secs(),
+                data=order.__dict__
+            )
+            new_entry.hash = signer.sign(new_entry=new_entry, prev_entry=last_entry)
+            ledger.log(entry=new_entry)
+
     def _embed(self, author:str, author_icon:str, title:str, desc:str, color:int, footer:str, footer_icon:str, thumbnail:str, positions:list, prices:dict) -> Embed:
         icon_stop_loss = "\U0001F6D1"
         icon_take_profit = "\U0001F3C6"
@@ -197,31 +296,21 @@ class MerchantReporting:
         
         fields = []
         for position in positions:
-            if "orders" not in position: 
-                raise ValueError(f"expected key orders in position {position}")
-            if "projections" not in position:
-                raise ValueError(f"expected key projections in order {position}")
-            if "ticker" not in position:
-                raise ValueError(f"expected key ticker in order {position}")
-
-            ticker = position.get("ticker")
-            sub_orders = position.get("orders")
-            projections = position.get("projections")
-            current_price = prices.get(ticker)
-
-            potential_profit = projections.get("profit_without_fees")
-            potential_loss = projections.get("loss_without_fees")
-
-            main_order = sub_orders.get("main")
-            stop_loss_order = sub_orders.get("stop_loss")
-            take_profit_order = sub_orders.get("take_profit")
+            order = Order.from_dict(position)
+            current_price = prices.get(order.ticker)
             
-            main_price = main_order.get("price")
-            main_contracts = main_order.get("contracts")
+            potential_profit = order.projections.profit_without_fees
+            potential_loss = order.projections.loss_without_fees
 
-            stop_price = stop_loss_order.get("price")
+            main_order = order.sub_orders.main_order
+            stop_loss_order = order.sub_orders.stop_loss
+            take_profit_order = order.sub_orders.take_profit
+            
+            main_price = main_order.price
+            main_contracts = main_order.contracts
 
-            take_profit_price = take_profit_order.get("price")
+            stop_price = stop_loss_order.price
+            take_profit_price = take_profit_order.price
 
             main_total = multiply(main_price, main_contracts)
 
@@ -245,8 +334,8 @@ class MerchantReporting:
             sell_now_msg = f"LOSS of {sell_now_profit_loss}" if sell_now_profit_loss < 0 else f"PROFIT of {sell_now_profit_loss}"
             
             fields.append(Field(
-                name=f"{ticker}",
-                value=f"{icon_entry} @ {main_price} x {main_contracts} = {main_total}\n{icon_stop_loss} @ {stop_price} ({stop_price_per_diff}%) for {potential_loss}\n{icon_take_profit} @ {take_profit_price} ({take_profit_per_diff}%) for {potential_profit}\nCURRENT PRICE @ {current_price} ({sell_now_per_diff}%), selling now would be a {sell_now_msg}"
+                name=f"{order.ticker}",
+                value=f"PRICE @ {current_price} ({sell_now_per_diff}%) - {sell_now_msg}\n{icon_entry} @ {main_price} x {main_contracts} = {main_total}\n{icon_stop_loss} @ {stop_price} ({stop_price_per_diff}%) for {potential_loss}\n{icon_take_profit} @ {take_profit_price} ({take_profit_per_diff}%) for {potential_profit}"
             ))
 
         return Embed(
@@ -354,8 +443,7 @@ class MerchantReporting:
             main_message += f"{losers_ct} loser(s) "
         main_message += f"\n {icon_elapsed} *Elapsed*: {elapsed_time_ms}ms"
         
-        db = database()
-        author = main_author(db=db)
+        author = main_author(db=persona_db)
         msg = WebhookMessage(
             username=author.name,
             avatar_url=author.avatar_url,

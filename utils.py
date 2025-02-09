@@ -1,3 +1,4 @@
+import random
 import time
 
 class consts:
@@ -36,3 +37,12 @@ def unix_timestamp_ms() -> int:
 
 def null_or_empty(string:str) -> bool:
     return string is None or len(string.strip()) == 0
+
+def roll_dice_10percent() -> bool:
+    return random.randint(1, 10) == 5
+
+def roll_dice_5percent() -> bool:
+    return random.randint(1, 20) == 10
+
+def roll_dice_33percent() -> bool:
+    return random.randint(1, 3) == 1

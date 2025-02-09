@@ -136,6 +136,35 @@ class keys:
             def SUBORDERS():
                 return "orders"
             
+            @staticmethod
+            def MERCHANT_PARAMETERS():
+                return "merchant_params"
+            
+            class merchant_params:
+                @staticmethod
+                def LOW_INTERVAL():
+                    return "low_interval"
+                
+                @staticmethod
+                def HIGH_INTERVAL():
+                    return "high_interval"
+                
+                @staticmethod
+                def VERSION():
+                    return "version"
+                
+                @staticmethod
+                def NOTES():
+                    return "notes"
+                
+                @staticmethod
+                def STOPLOSS_PERCENT():
+                    return "stoploss_percent"
+                
+                @staticmethod
+                def TAKEPROFIT_PERCENT():
+                    return "takeprofit_percent"
+            
             class projections:
                 @staticmethod
                 def PROFIT_WITHOUT_FEES():

@@ -3,6 +3,14 @@ from azure.data.tables import TableClient
 from abc import ABC, abstractmethod
 
 class Entry(dict):
+    def __init__(self, init_dict:dict):
+        super().__init__(init_dict)
+        self.name = init_dict.get("name")
+        self.amount = init_dict.get("amount")
+        self.hash = init_dict.get("hash")
+        self.timestamp = init_dict.get("timestamp")
+        self.data = init_dict.get("data")
+
     def __init__(self, name:str, amount:float, hash:str, timestamp:int, data:dict = {}, test:bool = False):
         super().__init__(name=name, amount=amount, hash=hash, timestamp=timestamp, data=data)
         if name is None:
@@ -31,3 +39,16 @@ class Ledger(ABC):
     @abstractmethod
     def verify_integrity(self, signer:Signer) -> list[Entry]:
         pass
+
+    @abstractmethod
+    def purge_old_logs(self) -> list[Entry]:
+        pass
+
+    @abstractmethod
+    def get_latest_entry(self) -> Entry:
+        pass
+
+    @abstractmethod
+    def get_entries(self, name:str, from_timestamp:int, to_timestamp:int, include_tests:bool) -> list[Entry]:
+        pass
+
