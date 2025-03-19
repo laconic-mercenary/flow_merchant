@@ -7,13 +7,12 @@ from merchant_signal import MerchantSignal
 from persona import Persona
 from personas import database, main_author, next_laggard_persona, next_leader_persona, next_loser_persona, next_winner_persona
 from transactions import multiply, calculate_percent_diff
-from utils import unix_timestamp_secs, unix_timestamp_ms, consts as utils_consts
+from utils import unix_timestamp_secs, unix_timestamp_ms, roll_dice_10percent, consts as utils_consts
 
 import datetime
 import logging
 import io
 import traceback
-
 
 class MerchantReporting:
 
@@ -174,6 +173,8 @@ class MerchantReporting:
         leaders = current_positions.get("leaders")
         losers = current_positions.get("losers")
 
+        ## winners.sort(key=lambda x: x.profit_loss, reverse=True)
+
         if len(winners) == 0 and len(laggards) == 0 and len(leaders) == 0 and len(losers) == 0:
             logging.info(f"merchant_positions_checked() - no positions to report")
         else:
@@ -191,11 +192,12 @@ class MerchantReporting:
         if len(deleted_logs) != 0:
             logging.info(f"removed {len(deleted_logs)} expired logs from the ledger: {deleted_logs}")
         
-        bad_entries = ledger.verify_integrity(signer=signer)
-        if len(bad_entries) != 0:
-            msg = f"bad entries found in ledger: {bad_entries}"
-            logging.critical(msg)
-            self.report_problem(msg=msg, exc=Exception(msg))
+        if roll_dice_10percent():
+            bad_entries = ledger.verify_integrity(signer=signer)
+            if len(bad_entries) != 0:
+                msg = f"bad entries found in ledger: {bad_entries}"
+                logging.critical(msg)
+                self.report_problem(msg=msg, exc=Exception(msg))
 
         now_ts = unix_timestamp_secs()
         one_week_ago_ts = now_ts - utils_consts.ONE_WEEK_IN_SECS()
@@ -219,14 +221,12 @@ class MerchantReporting:
             field_report.write(f"Top Spreads, Top Tickers in Spread{new_line}")
             current_interval = interval_performance.interval
             count = 1
-            for spread_performance in interval_performance.spreads:
-                if count > 5:
-                    break
+            for spread_performance in interval_performance.spreads[:min(len(interval_performance.spreads), 5)]:
                 current_spread:SpreadData = spread_performance.spread
                 tickers = spread_performance.tickers
                 top_tickers = ""
                 for ticker in tickers[:min(len(tickers), 5)]:
-                    top_tickers += f"{ticker.ticker()} ({round(ticker.performance.win_pct, 3)}% - {round(ticker.performance.total_pnl, 5)}), "
+                    top_tickers += f"{ticker.ticker()} ({round(ticker.performance.win_pct * 100.0, 3)}% - {round(ticker.performance.total_pnl, 3)}), "
                 row = f"{count}. {current_spread.take_profit}/{current_spread.stop_loss} {top_tickers} {new_line}" 
                 field_report.write(row)
                 count += 1
@@ -242,8 +242,11 @@ class MerchantReporting:
         profits = performance.profits_by_category()
         author = main_author(db=database())
         fields = [ ]
+
         for interval_profit in profits[:min(len(profits), 5)]:
-            fields.append(self._field_from_analysis(interval_performance=interval_profit))
+            field = self._field_from_analysis(interval_performance=interval_profit)
+            fields.append(field)
+
         embeds.append(Embed(
             author=Author(
                 name=author.name,
@@ -334,7 +337,7 @@ class MerchantReporting:
             sell_now_msg = f"LOSS of {sell_now_profit_loss}" if sell_now_profit_loss < 0 else f"PROFIT of {sell_now_profit_loss}"
             
             fields.append(Field(
-                name=f"{order.ticker}",
+                name=f"{order.ticker} - ({order.merchant_params.high_interval}/{order.merchant_params.low_interval})",
                 value=f"PRICE @ {current_price} ({sell_now_per_diff}%) - {sell_now_msg}\n{icon_entry} @ {main_price} x {main_contracts} = {main_total}\n{icon_stop_loss} @ {stop_price} ({stop_price_per_diff}%) for {potential_loss}\n{icon_take_profit} @ {take_profit_price} ({take_profit_per_diff}%) for {potential_profit}"
             ))
 
@@ -457,3 +460,12 @@ class MerchantReporting:
         out = io.StringIO()
         traceback.print_exception(ex, file=out)
         return out.getvalue().strip()
+    
+if __name__ == "__main__":
+    import unittest
+
+    class Test(unittest.TestCase):
+        def test_send_check_result(self):
+            instance = MerchantReporting()
+
+    unittest.main()

@@ -33,7 +33,8 @@ class TrailingStopStrategy(BracketStrategy):
         dry_run_mode = merchant_params.get("dry_run_order")
 
         new_stop_loss, new_take_profit = self._determine_new_levels(
-                                            current_price=current_price, 
+                                            current_price=current_price,
+                                            old_order_price=order.sub_orders.main_order.price,
                                             old_stop_loss=order.sub_orders.stop_loss.price,
                                             old_take_profit=order.sub_orders.take_profit.price
                                         )
@@ -144,13 +145,10 @@ class TrailingStopStrategy(BracketStrategy):
             "new_stop_loss_order_api": new_stop_loss_result_raw
         })
         return results
-        
-    def _determine_new_levels(self, current_price:float, old_stop_loss:float, old_take_profit:float) -> tuple:
-        grid_diff = old_take_profit - old_stop_loss
-        new_stop_loss = old_stop_loss
-        new_take_profit = old_take_profit
-        while current_price >= new_take_profit:
-            new_stop_loss = new_stop_loss + grid_diff
-            new_take_profit = new_stop_loss + grid_diff
-        return (new_stop_loss, new_take_profit)
     
+    def _determine_new_levels(self, current_price:float, old_order_price:float, old_stop_loss:float, old_take_profit:float) -> tuple:
+        grid_diff = old_take_profit - old_order_price
+        new_stop_loss = current_price - grid_diff
+        new_take_profit = current_price + grid_diff
+        return (new_stop_loss, new_take_profit)
+        

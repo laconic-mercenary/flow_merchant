@@ -10,6 +10,7 @@ from merchant_order import Order
 from merchant import Merchant
 from merchant_reporting import MerchantReporting
 from server import *
+from signal_enhancements import apply_all
 from table_ledger import TableLedger, HashSigner
 from ledger_analytics import LedgerAnalytics
 from utils import roll_dice_10percent as roll_dice
@@ -17,6 +18,14 @@ from utils import roll_dice_10percent as roll_dice
 import command_app
 
 app = func.FunctionApp()
+
+@app.route(route="test",
+           methods=["GET"],
+           auth_level=func.AuthLevel.ANONYMOUS)
+def test_requests(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info("test_requests() - invoked")
+    
+    return rx_json()
 
 @app.route(route="positions",
            methods=["GET"],
@@ -123,6 +132,7 @@ def handle_for_signals(req: func.HttpRequest) -> func.HttpResponse:
         with connect_table_service() as table_service:    
             merchant = Merchant(table_service, broker)
             subscribe_events(merchant=merchant)
+            signal = enhance_signal(signal)
             merchant.handle_market_signal(signal)
         return rx_ok()
     
@@ -137,6 +147,9 @@ def handle_for_signals(req: func.HttpRequest) -> func.HttpResponse:
             }
         )
     return rx_not_found()
+
+def enhance_signal(signal: MerchantSignal) -> MerchantSignal:
+    return apply_all(signal)
 
 def subscribe_events(merchant: Merchant) -> None:
     merchant.on_order_placed += merchant_order_placed

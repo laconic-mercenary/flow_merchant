@@ -94,8 +94,8 @@ class MerchantSignal:
             raise ValueError("Version must be an integer")
         
         try:
-            float(flowmerchant.get("suggested_stoploss", 1.0))
-            float(flowmerchant.get("takeprofit_percent", 1.0))
+            float(flowmerchant.get("suggested_stoploss", 0.0))
+            float(flowmerchant.get("takeprofit_percent", 0.0))
         except ValueError as e:
             logging.error(f"Flowmerchant values must be numbers: {e}")
             raise ValueError("Flowmerchant values must be numbers")
@@ -136,13 +136,13 @@ class MerchantSignal:
 
     # Accessor methods for flowmerchant
     def suggested_stoploss(self) -> float:
-         stop_loss = float(self.flowmerchant.get("suggested_stoploss", 1.0))
+         stop_loss = float(self.flowmerchant.get("suggested_stoploss", 0.0))
          if stop_loss < 0.0 or stop_loss > 100.0:
              raise ValueError("stop_loss must be between 0.0 and 100.0")
          return stop_loss    
 
     def takeprofit_percent(self) -> float:
-        take_profit = float(self.flowmerchant.get("takeprofit_percent", 1.0))
+        take_profit = float(self.flowmerchant.get("takeprofit_percent", 0.0))
         if take_profit < 0.0 or take_profit > 100.0:
             raise ValueError("take_profit must be between 0.0 and 100.0")
         return take_profit

@@ -46,3 +46,39 @@ def roll_dice_5percent() -> bool:
 
 def roll_dice_33percent() -> bool:
     return random.randint(1, 3) == 1
+
+def rand_select(in_list:list[any]) -> any:
+    if in_list is None or len(in_list) == 0:
+        raise ValueError("in_list is required")
+    return in_list[random.randint(0, len(in_list) - 1)]
+
+if __name__ == "__main__":
+    import unittest
+
+    class Test(unittest.TestCase):
+
+        def test_null_or_empty(self):
+            self.assertTrue(null_or_empty(None))
+            self.assertTrue(null_or_empty(""))
+            self.assertTrue(null_or_empty(" "))
+            self.assertFalse(null_or_empty(" a "))
+
+        def test_rand_select_one_mbr(self):
+            test_arr = [1]
+            result = rand_select(test_arr)
+            self.assertEqual(1, result)
+
+        def test_rand_select_no_mbrs(self):
+            test_arr = []
+            try:
+                rand_select(test_arr)
+            except ValueError:
+                return
+            self.assertTrue(False, "should not reach here")
+
+        def test_rand_select_mbrs(self):
+            test_arr = [1,0,2]
+            result = rand_select(test_arr)
+            self.assertIn(result, test_arr)
+
+    unittest.main()

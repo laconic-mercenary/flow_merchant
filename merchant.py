@@ -16,7 +16,7 @@ from merchant_signal import MerchantSignal
 from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelable, DryRunnable
 from order_strategy import OrderStrategy
 from transactions import calculate_stop_loss, calculate_take_profit
-from utils import unix_timestamp_secs, unix_timestamp_ms
+from utils import unix_timestamp_secs, unix_timestamp_ms, roll_dice_10percent
 
 class cfg:
     @staticmethod
@@ -69,7 +69,8 @@ class Merchant:
         
         results = self._check_positions()
 
-        self._purge_old_positions()
+        if roll_dice_10percent():
+            self._purge_old_positions()
 
         results.update({ "elapsed_ms": unix_timestamp_ms() - start_time_ms })
 
@@ -116,6 +117,10 @@ class Merchant:
                 results["positions"]["winners"].extend(check_result["orders"]["winners"])
                 results["positions"]["leaders"].extend(check_result["orders"]["leaders"])
                 results["positions"]["laggards"].extend(check_result["orders"]["laggards"])
+
+                ## TODO remove me after testing the non dry run flow
+                if "_stop_order_info" in results:
+                    raise ValueError(f"!!! check the following for the status field (in _original): {results.get('_stop_order_info')}")
         return results
 
 
@@ -151,6 +156,9 @@ class Merchant:
 
             logging.info(f"Checking position: {ticker}, strategy: {strategy.name()} order:{order_dict}")
 
+            ### TODO
+            ### the below is not reliable for determining if the stop loss triggered or not
+            ### need to determine the correct status to query on the order
             if not is_dry_run:
                 stop_loss_order_info = self.broker.get_order(ticker=ticker, order_id=stop_loss_order_id)
                 logging.info(f"(from broker) stop loss order info: {stop_loss_order_info}")
@@ -159,6 +167,7 @@ class Merchant:
                     ## kinda hacky but reuses the logic below
                     stop_loss_price = take_profit_price - 1.0
                     current_price = stop_loss_price - 1.0
+                results.update({ "_stop_order_info": stop_loss_order_info })
 
             if current_price <= stop_loss_price:
                 logging.info(f"stop loss {stop_loss_price} hit for {ticker} at {current_price}")
@@ -554,15 +563,11 @@ class Merchant:
     
     def suggested_stoploss(self, stoploss: float = None) -> float:
         if stoploss is not None:
-            if stoploss > 1.0:
-                raise ValueError(f"stoploss must be <= 1.0, but received {stoploss}")
             self.state[keys.STOPLOSS()] = stoploss
         return float(self.state.get(keys.STOPLOSS()))
     
     def takeprofit_percent(self, takeprofit: float = None) -> float:
         if takeprofit is not None:
-            if takeprofit < 1.0:
-                raise ValueError(f"takeprofit must be >= 1.0, but received {takeprofit}")
             self.state[keys.TAKEPROFIT()] = takeprofit
         return float(self.state.get(keys.TAKEPROFIT()))
     

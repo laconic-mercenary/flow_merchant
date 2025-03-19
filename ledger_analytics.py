@@ -1,6 +1,6 @@
 from ledger import Ledger, Entry
 from merchant_order import Order, MerchantParams, Metadata, SubOrders, SubOrder, Projections
-from utils import unix_timestamp_ms, consts as util_consts
+from utils import unix_timestamp_ms
 
 class Performance:
     def __init__(self, total_pnl: float = None, highest_pnl: float = None, lowest_pnl: float = None, win_pct: float = None) -> None:
@@ -109,6 +109,7 @@ class PerformanceView:
             self.spread = spread
             self.tickers = tickers
             self.total_pnl = sum([ticker.performance.total_pnl for ticker in tickers])
+            self.win_pct = len([ticker for ticker in tickers if ticker.performance.total_pnl > 0.0]) / len(tickers)
 
     class IntervalPerformance:
         def __init__(self, interval: IntervalData, spreads: list):
@@ -139,10 +140,10 @@ class PerformanceView:
                     tickers = spreads.by_ticker[ticker_key]
                     ticker_results.append(tickers)
                 
-                ticker_results.sort(key=lambda ticker: ticker.performance.total_pnl, reverse=True)
+                ticker_results.sort(key=lambda ticker: ticker.performance.win_pct, reverse=True)
                 spread_results.append(self.SpreadPerformance(spreads, ticker_results))
 
-            spread_results.sort(key=lambda spread: spread.total_pnl, reverse=True)
+            spread_results.sort(key=lambda spread: spread.win_pct, reverse=True)
             interval_results.append(self.IntervalPerformance(intervals, spread_results))
 
         interval_results.sort(key=lambda interval: interval.total_pnl, reverse=True)

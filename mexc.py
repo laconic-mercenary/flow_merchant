@@ -103,6 +103,7 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
         if "time" not in order:
             raise ValueError(f"expected key time to be in {order}")
         return {
+            "_original": str(order),
             "id": order_id,
             "status": order.get("status"),
             "timestamp": order.get("time"),
@@ -531,3 +532,16 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
 
         return response.json()
     
+    ## TEST
+
+    def _api_get_spot_orders(self, ticker: str = None) -> dict:
+        url = f"{self._cfg_api_endpoint()}/api/v3/ticker/price"
+        params = {
+            "method": "SUBSCRIPTION",
+            "params": [
+                "spot@private.orders.v3.api.pb"
+            ]
+        }
+        headers = self._request_headers()
+        response = requests.get(f"{url}", headers=headers, params=params)
+        return response.json()

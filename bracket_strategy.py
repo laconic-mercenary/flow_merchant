@@ -13,6 +13,14 @@ import uuid
 
 class BracketStrategy(OrderStrategy):
 
+    def _current_price(self, broker:Broker, ticker:str) -> float:
+        if not isinstance(broker, LiveCapable):
+            return ValueError("Broker is not LiveCapable")
+        results = broker.get_current_prices([ticker])
+        if ticker not in results:
+            raise ValueError(f"Expected ticker {ticker} to be in current prices {results}")
+        return results.get(ticker)
+
     def place_orders(self, broker:Broker, signal: MerchantSignal, merchant_state:dict, merchant_params:dict = {}) -> Order:
         ticker = signal.ticker()
         contracts = signal.contracts()
@@ -40,6 +48,12 @@ class BracketStrategy(OrderStrategy):
             contracts=contracts,
             action="BUY"
         )
+        ### TODO 
+        ### There is a bug in the MEXC API where the market order price is not correct
+        ### https://github.com/mexcdevelop/mexc-api-sdk/issues/77
+        ### temporarily use current price instead, this will incur a cost to our API usage
+        current_price = self._current_price(broker, ticker)
+
         market_order_info = broker.standardize_market_order(market_order_rx)
         logging.info(f"broker - market order response: {market_order_rx}")
 
@@ -60,7 +74,9 @@ class BracketStrategy(OrderStrategy):
         if keys.bkrdata.order.suborders.props.CONTRACTS() not in market_order_info:
             raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.CONTRACTS()} not found in market order data {market_order_info}")
 
-        main_order_price = market_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
+        ## (see above)
+        ## main_order_price = market_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
+        main_order_price = current_price
         main_order_contracts = market_order_info.get(keys.bkrdata.order.suborders.props.CONTRACTS())
 
         stop_loss_price = calculate_stop_loss(
