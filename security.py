@@ -1,3 +1,5 @@
+from merchant_order import Order
+
 import hashlib
 import os
 
@@ -15,3 +17,10 @@ def hash(target: str, count: int = cfg.DEFAULT_HASH_COUNT()) -> str:
         count -= 1
     return target
 
+def order_digest(order:Order) -> str:
+    hash_count = 5 ## Keep it nice and quick
+    metadata_chunk = f"{order.metadata.time_created}-{order.metadata.id}-{order.metadata.is_dry_run}"
+    sub_orders_chunk = f"{order.sub_orders.main_order.id}-{order.sub_orders.stop_loss.id}-{order.sub_orders.take_profit.id}"
+    merchant_params_chunk = f"{order.merchant_params.version}-{order.merchant_params.high_interval}-{order.merchant_params.low_interval}"
+    payload = f"{metadata_chunk}+{sub_orders_chunk}+{merchant_params_chunk}"
+    return hash(payload, count=hash_count)

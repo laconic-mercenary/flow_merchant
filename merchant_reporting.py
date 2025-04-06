@@ -1,23 +1,56 @@
 from discord import DiscordClient, WebhookMessage, Thumbnail, Author, Footer, Field, Embed, colors
 from ledger import Ledger, Entry, Signer
-from ledger_analytics import LedgerAnalytics, LedgerAnalysis, PerformanceView, SpreadData, IntervalData, TickerData
+from ledger_analytics import Analytics
 from merchant_keys import keys as mkeys
 from merchant_order import Order
 from merchant_signal import MerchantSignal
 from persona import Persona
 from personas import database, main_author, next_laggard_persona, next_leader_persona, next_loser_persona, next_winner_persona
+from security import order_digest
 from transactions import multiply, calculate_percent_diff
-from utils import unix_timestamp_secs, unix_timestamp_ms, roll_dice_10percent, consts as utils_consts
+from utils import unix_timestamp_secs, time_from_timestamp, time_utc_as_str, roll_dice_33percent, consts as utils_consts
 
-import datetime
 import logging
 import io
+import os
 import traceback
+
+class cfg:
+    def REPORTING_SIGNAL_RECEIVED() -> bool:
+        enabled = os.environ.get("MERCHANT_REPORTING_SIGNAL_RECEIVED", "false")
+        return enabled.lower() == "true"
+    
+    def REPORTING_STATE_CHANGED() -> bool:
+        enabled = os.environ.get("MERCHANT_REPORTING_STATE_CHANGED", "false")
+        return enabled.lower() == "true"
+    
+    def REPORTING_NEW_ORDERS() -> bool:
+        enabled = os.environ.get("MERCHANT_REPORTING_NEW_ORDERS", "true")
+        return enabled.lower() == "true"
+    
+    def REPORTING_CHECK_RESULTS() -> bool:
+        enabled = os.environ.get("MERCHANT_REPORTING_CHECK_RESULTS", "true")
+        return enabled.lower() == "true"
+
+    def REPORTING_LEDGER_PERFORMANCE() -> bool:
+        enabled = os.environ.get("MERCHANT_REPORTING_LEDGER_PERFORMANCE", "true")
+        return enabled.lower() == "true"
+
 
 class MerchantReporting:
 
-    def report_problem(self, msg:str, exc:Exception) -> None:
+    def report_problem(self, msg:str, exc:Exception = None) -> None:
         author = main_author(db=database())
+        fields=[]
+        if exc is not None:
+            fields.append(Field(
+                name="Message",
+                value=str(exc)
+            ))
+            fields.append(Field(
+                name="Traceback",
+                value=self._traceback_as_str(exc)
+            ))
         DiscordClient().send_webhook_message(msg=WebhookMessage(
             username=author.name,
             avatar_url=author.avatar_url,
@@ -38,25 +71,21 @@ class MerchantReporting:
                     thumbnail=Thumbnail(
                         url=author.avatar_url
                     ),
-                    fields=[
-                        Field(
-                            name="Message",
-                            value=str(exc)
-                        ),
-                        Field(
-                            name="Traceback",
-                            value=self._traceback_as_str(exc)
-                        )
-                    ]
+                    fields=fields
                 )
             ]
         ))
 
     def report_signal_received(self, signal:MerchantSignal) -> None:
-        pass
+        ### nothing for now, keep the traffic lean
+        if not cfg.REPORTING_SIGNAL_RECEIVED():
+            logging.debug("signal received reporting is disabled")
 
     def report_state_changed(self, merchant_id: str, status: str, state: dict) -> None:
-        reportable_states = ["buying", "resting"]
+        if not cfg.REPORTING_STATE_CHANGED():
+            logging.warning("merchant state changed reporting (buying, selling, shopping etc) is disabled")
+            return
+        reportable_states = ["buying", "resting"] ## don't report states for now to avoid rate limiting on discord
         status_lower = status.lower()
         if status_lower not in reportable_states:
             return
@@ -73,6 +102,9 @@ class MerchantReporting:
         ))
 
     def report_order_placed(self, order:Order) -> None:
+        if not cfg.REPORTING_NEW_ORDERS():
+            logging.warning("reporting for new order placements is currently disabled")
+            return
         ticker = order.ticker
         order_dry_run = order.metadata.is_dry_run
         main_order = order.sub_orders.main_order
@@ -127,8 +159,12 @@ class MerchantReporting:
                             value=ticker
                         ),
                         Field(
-                            name="Main price",
-                            value=str(main_price)
+                            name="Time(UTC)",
+                            value=time_utc_as_str()
+                        ),
+                        Field(
+                            name="Main price (total)",
+                            value=f"{main_price} ({main_price * main_contracts})"
                         ),
                         Field(
                             name="Main contracts",
@@ -152,6 +188,9 @@ class MerchantReporting:
         ))
 
     def report_check_results(self, results:dict) -> None:
+        if not cfg.REPORTING_CHECK_RESULTS():
+            logging.warning("IMPORTANT - check results reporting (winners, leaders, laggards, losers) is currently disabled!")
+            return
         if "positions" not in results:
             logging.warning(f"merchant_positions_checked() - no current positions - {results}")
             return
@@ -172,9 +211,7 @@ class MerchantReporting:
         laggards = current_positions.get("laggards")
         leaders = current_positions.get("leaders")
         losers = current_positions.get("losers")
-
-        ## winners.sort(key=lambda x: x.profit_loss, reverse=True)
-
+        
         if len(winners) == 0 and len(laggards) == 0 and len(leaders) == 0 and len(losers) == 0:
             logging.info(f"merchant_positions_checked() - no positions to report")
         else:
@@ -187,85 +224,124 @@ class MerchantReporting:
                 elapsed_time_ms=elapsed_ms
             )
 
-    def report_ledger_performance(self, ledger:Ledger, signer:Signer, analytics:LedgerAnalytics) -> None:
-        deleted_logs = ledger.purge_old_logs()
-        if len(deleted_logs) != 0:
-            logging.info(f"removed {len(deleted_logs)} expired logs from the ledger: {deleted_logs}")
-        
-        if roll_dice_10percent():
+    def report_ledger_performance(self, ledger:Ledger, signer:Signer, from_timestamp:int = unix_timestamp_secs() - utils_consts.ONE_YEAR_IN_SECS()) -> None:
+        if not cfg.REPORTING_LEDGER_PERFORMANCE():
+            logging.warning("reporting ledger performance is disabled")
+            return
+        if roll_dice_33percent():
+            deleted_logs = ledger.purge_old_logs()
+            if len(deleted_logs) != 0:
+                logging.info(f"removed {len(deleted_logs)} expired logs from the ledger: {deleted_logs}")
+            
             bad_entries = ledger.verify_integrity(signer=signer)
             if len(bad_entries) != 0:
                 msg = f"bad entries found in ledger: {bad_entries}"
                 logging.critical(msg)
                 self.report_problem(msg=msg, exc=Exception(msg))
 
-        now_ts = unix_timestamp_secs()
-        one_week_ago_ts = now_ts - utils_consts.ONE_WEEK_IN_SECS()
-        entries = ledger.get_entries(name=None, from_timestamp=one_week_ago_ts, to_timestamp=now_ts)
+        entries = ledger.get_entries(name=None, from_timestamp=from_timestamp, to_timestamp=unix_timestamp_secs(), include_tests=True)
         
         if len(entries) == 0:
             logging.info(f"No entries found in ledger - will skip analytics and performance reporting")
         else:
-            analysis = analytics.performance_by_interval(entries=entries)
-            persona = main_author(db=database())
-            DiscordClient().send_webhook_message(msg=WebhookMessage(
-                username=persona.name,
-                avatar_url=persona.avatar_url,
-                content="Performance Report",
-                embeds=self._embeds_from_analysis(analysis=analysis)
+            min_trades = 5
+            top_count = 4
+
+            fields = []
+
+            interval_analytics = Analytics.Intervals()
+            spread_analytics = Analytics.Spreads()
+            ticker_analytics = Analytics.Tickers()
+            overall = Analytics.Overall()
+
+            for ledger_entry in entries:
+                interval_analytics.add(ledger_entry=ledger_entry)
+                spread_analytics.add(ledger_entry=ledger_entry)
+                ticker_analytics.add(ledger_entry=ledger_entry)
+                overall.add(ledger_entry=ledger_entry)
+            
+            overall_results = overall.results()
+            overall_results = [_overall for _overall in overall_results if _overall.total_trades >= min_trades]
+            overall_results = overall_results[:min(len(overall_results), top_count)]
+            overall_payload = ""
+
+            interval_results = interval_analytics.results()
+            interval_results = [_interval for _interval in interval_results if _interval.total_trades >= min_trades]
+            interval_results = interval_results[:min(len(interval_results), top_count)]
+            interval_payload = ""
+
+            spread_results = spread_analytics.results()
+            spread_results = [_spread for _spread in spread_results if _spread.total_trades >= min_trades]
+            spread_results = spread_results[:min(len(spread_results), top_count)]
+            spread_payload = ""
+
+            ticker_results = ticker_analytics.results()
+            ticker_results = [_ticker for _ticker in ticker_results if _ticker.total_trades >= min_trades]
+            ticker_results = ticker_results[:min(len(ticker_results), top_count)]
+            ticker_payload = ""
+
+            author = main_author(db=database())
+
+            overall_icon = "\U00002211"
+            interval_icon = "\u23F0"
+            spread_icon = "\U0001F503"
+            ticker_icon = "\U0001F4CA"
+            
+            for overall in overall_results:
+                overall_payload = overall_payload + f"{overall_icon} **Overall** ({len(overall_results)}): {round(overall.win_pct, 2) * 100.0}% ({overall.winning_trades}/{overall.total_trades} trades) - {round(overall.total_pnl, 4)}\n"
+
+            for interval in interval_results:
+                interval_payload = interval_payload + f"{interval_icon} *{interval.high_interval}/{interval.low_interval}* ({len(interval_results)}): {round(interval.win_pct, 2) * 100.0}% ({interval.winning_trades}/{interval.total_trades} trades) - {round(interval.total_pnl, 4)}\n"
+            
+            for spread in spread_results:
+                spread_payload = spread_payload + f"{spread_icon} *{spread.take_profit}/{spread.stop_loss}* ({len(spread_results)}): {round(spread.win_pct, 2) * 100.0}% ({spread.winning_trades}/{spread.total_trades} trades) - {round(spread.total_pnl, 4)}\n"
+
+            for ticker in ticker_results:
+                ticker_payload = ticker_payload + f"{ticker_icon} *{ticker.ticker}* ({len(ticker_results)}): {round(ticker.win_pct, 2) * 100.0}% ({ticker.winning_trades}/{ticker.total_trades} trades) - {round(ticker.total_pnl, 4)}\n"
+
+            fields.append(Field(
+                name=f"Summary",
+                value=f"{overall_payload}"
+            ))
+            fields.append(Field(
+                name=f"By Interval",
+                value=f"{interval_payload}"
+            ))
+            fields.append(Field(
+                name=f"By Spread",
+                value=f"{spread_payload}"
+            ))
+            fields.append(Field(
+                name=f"By Ticker",
+                value=f"{ticker_payload}"
             ))
 
-    def _field_from_analysis(self, interval_performance:PerformanceView.IntervalPerformance) -> Field:
-        new_line = "\n"
-        with io.StringIO(initial_value="", newline=new_line) as field_report:
-            field_report.write(f"Top Spreads, Top Tickers in Spread{new_line}")
-            current_interval = interval_performance.interval
-            count = 1
-            for spread_performance in interval_performance.spreads[:min(len(interval_performance.spreads), 5)]:
-                current_spread:SpreadData = spread_performance.spread
-                tickers = spread_performance.tickers
-                top_tickers = ""
-                for ticker in tickers[:min(len(tickers), 5)]:
-                    top_tickers += f"{ticker.ticker()} ({round(ticker.performance.win_pct * 100.0, 3)}% - {round(ticker.performance.total_pnl, 3)}), "
-                row = f"{count}. {current_spread.take_profit}/{current_spread.stop_loss} {top_tickers} {new_line}" 
-                field_report.write(row)
-                count += 1
-
-            return Field(
-                name=f"{current_interval.high_interval}/{current_interval.low_interval} (high/low)",
-                value=field_report.getvalue()
+            msg=WebhookMessage(
+                username=author.name,
+                avatar_url=author.avatar_url,
+                content=f"Performance Report",
+                embeds=[
+                    Embed(
+                        author=Author(
+                            name=author.name,
+                            icon_url=author.avatar_url
+                        ),
+                        title="Here is my performance so far",
+                        description="By Interval, Spread, and Ticker",
+                        color=colors.BLUE(),
+                        footer=Footer(
+                            text="End Report",
+                            icon_url=author.avatar_url
+                        ),
+                        thumbnail=Thumbnail(
+                            url=author.avatar_url
+                        ),
+                        fields=fields
+                    )
+                ]
             )
-
-    def _embeds_from_analysis(self, analysis:LedgerAnalysis) -> list[Embed]:
-        embeds = [ ]
-        performance = PerformanceView(ledger_analysis=analysis)
-        profits = performance.profits_by_category()
-        author = main_author(db=database())
-        fields = [ ]
-
-        for interval_profit in profits[:min(len(profits), 5)]:
-            field = self._field_from_analysis(interval_performance=interval_profit)
-            fields.append(field)
-
-        embeds.append(Embed(
-            author=Author(
-                name=author.name,
-                icon_url=author.avatar_url
-            ),
-            title=f"By Interval",
-            description=f"Profits by the leading 5 intervals (high / low)",
-            color=colors.BLUE(),
-            fields=fields,
-            footer=Footer(
-                text=f"End",
-                icon_url=author.avatar_url
-            ),
-            thumbnail=Thumbnail(
-                url=author.avatar_url
-            )
-        ))
-
-        return embeds
+            logging.info(f"ledger performance report results: {msg}")
+            DiscordClient().send_webhook_message(msg=msg)
 
     def report_to_ledger(self, positions:list[dict], ledger:Ledger, signer:Signer) -> None:
         if ledger is None:
@@ -293,12 +369,27 @@ class MerchantReporting:
             ledger.log(entry=new_entry)
 
     def _embed(self, author:str, author_icon:str, title:str, desc:str, color:int, footer:str, footer_icon:str, thumbnail:str, positions:list, prices:dict) -> Embed:
+        icon_timestamp = "\U0001F55B"
         icon_stop_loss = "\U0001F6D1"
         icon_take_profit = "\U0001F3C6"
         icon_entry = "\U0001F4B5"
+        icon_sell = "\U0001F58A"
+
+        def _current_profit(order:Order, current_price:float) -> float:
+            main_price = order.sub_orders.main_order.price
+            main_contracts = order.sub_orders.main_order.contracts
+            return (current_price - main_price) * main_contracts
         
+        def _sort_current_profit(order_dict:dict, prices:dict) -> float:
+            order = Order.from_dict(order_dict)
+            return _current_profit(order, prices.get(order.ticker))
+        
+        positions.sort(key=lambda x: _sort_current_profit(order_dict=x, prices=prices), reverse=True)
+
         fields = []
-        for position in positions:
+        discord_max_fields = 5
+        max_iters = min(len(positions), discord_max_fields)
+        for position in positions[:max_iters]:
             order = Order.from_dict(position)
             current_price = prices.get(order.ticker)
             
@@ -333,12 +424,22 @@ class MerchantReporting:
             sell_now_per_diff = calculate_percent_diff(current_price, main_price) * 100.0
             sell_now_per_diff = round(sell_now_per_diff, 3)
 
-            sell_now_profit_loss = round(multiply(current_price, main_contracts) - main_total, 7)
+            sell_now_profit_loss = round(_current_profit(order=order, current_price=current_price), 7)
             sell_now_msg = f"LOSS of {sell_now_profit_loss}" if sell_now_profit_loss < 0 else f"PROFIT of {sell_now_profit_loss}"
             
+            order_sell_id = order_digest(order=order)
+            order_friendly_timestamp = time_from_timestamp(order.metadata.time_created / 1000.0)
+
+            payload = f"PRICE @ {current_price} ({sell_now_per_diff}%) - {sell_now_msg}"
+            payload += f"\n{icon_timestamp} _*{order_friendly_timestamp}*_ UTC"
+            payload += f"\n{icon_entry} @ {main_price} x {main_contracts} = {main_total}"
+            payload += f"\n{icon_stop_loss} @ {stop_price} ({stop_price_per_diff}%) for {potential_loss}"
+            payload += f"\n{icon_take_profit} @ {take_profit_price} ({take_profit_per_diff}%) for {potential_profit}"
+            payload += f"\n{icon_sell} [~SELL NOW~](https://stockton-jpe01-flow-merchant.azurewebsites.net/api/command/sell/{order_sell_id})"
+
             fields.append(Field(
                 name=f"{order.ticker} - ({order.merchant_params.high_interval}/{order.merchant_params.low_interval})",
-                value=f"PRICE @ {current_price} ({sell_now_per_diff}%) - {sell_now_msg}\n{icon_entry} @ {main_price} x {main_contracts} = {main_total}\n{icon_stop_loss} @ {stop_price} ({stop_price_per_diff}%) for {potential_loss}\n{icon_take_profit} @ {take_profit_price} ({take_profit_per_diff}%) for {potential_profit}"
+                value=payload
             ))
 
         return Embed(
@@ -434,7 +535,7 @@ class MerchantReporting:
         icon_positions = "\U0001F4C8"
         icon_elapsed =  "\U000023F3"
 
-        current_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        current_time = time_utc_as_str()
         main_message = f"{icon_report} **REPORT RESULTS**\n {icon_timestamp} *Time (UTC)*: __{current_time}__ \n {icon_positions} *Positions*: "
         if winners_ct != 0:
             main_message += f"{winners_ct} winner(s) "

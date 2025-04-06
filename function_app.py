@@ -12,8 +12,7 @@ from merchant_reporting import MerchantReporting
 from server import *
 from signal_enhancements import apply_all
 from table_ledger import TableLedger, HashSigner
-from ledger_analytics import LedgerAnalytics
-from utils import roll_dice_10percent as roll_dice
+from utils import time_utc_as_str, roll_dice_10percent as roll_dice
 
 import command_app
 
@@ -22,10 +21,23 @@ app = func.FunctionApp()
 @app.route(route="test",
            methods=["GET"],
            auth_level=func.AuthLevel.ANONYMOUS)
-def test_requests(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("test_requests() - invoked")
+def test(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info("test() - invoked")
     
-    return rx_json()
+    from utils import unix_timestamp_secs, consts as util_consts
+
+    reporting = MerchantReporting()
+
+    try:
+        with connect_table_service() as table_service:
+            table_name = "fmorderledger"
+            table_client = table_service.get_table_client(table_name=table_name)
+            table_ledger = TableLedger(table_client=table_client)
+            from_ts = unix_timestamp_secs() - util_consts.ONE_DAY_IN_SECS(days=3)
+            reporting.report_ledger_performance(ledger=table_ledger, signer=HashSigner(), from_timestamp=from_ts)
+    except Exception as e:
+        logging.error(f"error reporting ledger performance - {e}", exc_info=True)
+    return rx_ok()
 
 @app.route(route="positions",
            methods=["GET"],
@@ -46,58 +58,49 @@ def signals(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("signals() - invoked")
     return handle_for_signals(req)
     
-@app.route(route="command/{instruction}",
-           methods=["GET", "POST"],
+@app.route(route="command/{instruction}/{identifier}",
+           methods=["GET"],
            auth_level=func.AuthLevel.ANONYMOUS)
 def command(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("command() - invoked")
     instruction = req.route_params.get("instruction")
+    identifier = req.route_params.get("identifier")
+    if instruction is None or identifier is None:
+        ### consider logging more info if this endpoint is getting attacked
+        logging.warning("command() - missing instruction or identifier")
+        return rx_bad_request()
     try:
         if is_get(req):
-            if instruction == "app":
-                return handle_webapp_for_command()
-            elif instruction == "get-positions":
-                return handle_getpositions_for_command(req)
-        elif is_post(req):
-            return handle_instruction_for_command(req=req, command=instruction)
+            return handle_instruction_for_command(
+                req=req, 
+                command=instruction, 
+                identifier=identifier
+            )
     except Exception as e:
         logging.error(f"error handling cmd - {e}", exc_info=True)
         report_problem(msg=f"error handling cmd", exc=e)
-    return rx_not_found()
+    return rx_bad_request()
 
 def connect_table_service() -> TableServiceClient:
     return TableServiceClient.from_connection_string(os.environ["storageAccountConnectionString"])
 
-def handle_webapp_for_command() -> func.HttpResponse:
-    with connect_table_service() as table_service:
-        broker_repo = BrokerRepository()
-        broker = broker_repo.get_for_security(security_type="crypto")
-        cmd_app = command_app.CommandApp(table_service=table_service, broker=broker)
-        return func.HttpResponse(
-            body=cmd_app.html(),
-            mimetype="text/html",
-            status_code=200
-        )
-
-def handle_getpositions_for_command(req: func.HttpRequest) -> func.HttpResponse:
-    ## get positions from database, making sure to hash the IDs
-    ## get current prices for the positions
-    ## return as a json
-    with connect_table_service() as table_service:    
-        broker_repo = BrokerRepository()
-        for sec_type in broker_repo.get_security_types():
-            broker = broker_repo.get_for_security(sec_type)
+def handle_instruction_for_command(req: func.HttpRequest, command: str, identifier:str) -> func.HttpResponse:
+    if command == "sell":
+        security_type = req.params.get("securityType", "crypto")        
+        broker = BrokerRepository().get_for_security(security_type)
+        with connect_table_service() as table_service:        
             merchant = Merchant(table_service, broker)
-            ## TODO
-    
-    return rx_not_found()
-
-def handle_instruction_for_command(req: func.HttpRequest, command: str) -> func.HttpResponse:
-    ## validate command (length and format)
-    ## query all positions
-    ## hash the IDs of each position
-    ## check it against the command
-    ## determine the command from the post payload (sell is the only one supported)
+            result = merchant.sell(identifier)
+            if result is None:
+                return rx_not_found("Unable to sell - order not found or no longer exists")
+            return rx_json({
+                "ticker": result.order.ticker,
+                "id": result.order.metadata.id,
+                "dry_run": result.order.metadata.is_dry_run,
+                "action": "SELL", 
+                "result": "OK",
+                "timestamp": time_utc_as_str()
+            })
     return rx_bad_request()
 
 def handle_for_positions(req: func.HttpRequest) -> func.HttpResponse:
@@ -158,8 +161,12 @@ def subscribe_events(merchant: Merchant) -> None:
     merchant.on_state_change += merchant_state_changed
 
 def report_problem(msg:str, exc:Exception, additional_data:dict = {}) -> None:
-    msg = f"Message: {msg} -- Data: {additional_data}"
-    MerchantReporting().report_problem(msg=msg, exc=exc)
+    try:
+        msg = f"Message: {msg} -- Data: {additional_data}"
+        MerchantReporting().report_problem(msg=msg, exc=exc)
+    except Exception as e:
+        logging.error(f"error reporting problem - {e} -- NOTE the original error was {exc}", exc_info=True)
+        MerchantReporting().report_problem(msg=f"Error in reporting problem. Original error was {exc}")
 
 def merchant_state_changed(merchant_id: str, status: str, state: dict) -> None:
     try:
@@ -200,8 +207,7 @@ def merchant_positions_checked(results: dict) -> None:
             
             ## only trigger a performance report occassionally due to it's processurally expensive nature
             if roll_dice():
-                analytics = LedgerAnalytics()
-                reporting.report_ledger_performance(ledger=table_ledger, signer=table_signer, analytics=analytics)
+                reporting.report_ledger_performance(ledger=table_ledger, signer=table_signer)
     except Exception as e:
         logging.error(f"error writing ledger - {e}", exc_info=True)
         report_problem(msg=f"error writing ledger", exc=e)

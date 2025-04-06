@@ -15,5 +15,9 @@ class OrderStrategy(ABC):
     def handle_take_profit(self, broker: Broker, order:Order, merchant_params:dict = {}) -> dict:
         pass
 
+    @abstractmethod
+    def handle_stop_loss(self, broker: Broker, order:Order, merchant_params:dict = {}) -> dict:
+        pass
+
     def name(self) -> str:
         return type(self).__name__

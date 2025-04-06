@@ -1,6 +1,8 @@
 import unittest.mock
 from ledger import Ledger, Entry, Signer
 from merchant_keys import keys as mkeys
+from merchant_order import Order
+from order_strategies import OrderStrategies
 from security import hash
 from utils import unix_timestamp_secs, unix_timestamp_ms, null_or_empty, unix_timestamp_secs_dec, consts as util_consts
 
@@ -170,10 +172,26 @@ class TableLedger(Ledger):
             if not name.isalnum():
                 raise ValueError("name must be alphanumeric")
             query_filter = f"{query_filter} and name eq '{name}'"
+        logging.info(f"ledger query: {query_filter}")
         entites = self.table_client.query_entities(query_filter)
         results = [self._entry_from_entity(raw_entity=entity) for entity in list(entites)]
         results.sort(key=lambda x: x.timestamp, reverse=False)
         return results
+    
+    def _patch_missing_strategy(self, entry_data:dict) -> bool:
+        if not isinstance(entry_data["data"], str):
+            logging.error("expected string")
+            return False
+        data_dict = json.loads(entry_data["data"])
+        if not isinstance(data_dict, dict):
+            logging.error("expected dict")
+            return False
+        if "strategy" not in data_dict["merchant_params"]:
+            logging.warning(f"found missing strategy for entry: {data_dict}")
+            data_dict["merchant_params"]["strategy"] = OrderStrategies.TRAILING_STOP.value
+            entry_data["data"] = json.dumps(data_dict)
+            return True
+        return False
     
     def recompute_ledger(self) -> None:
         logging.warning("recomputing ledger - all entries will have hash signatures recalculated")
@@ -187,7 +205,7 @@ class TableLedger(Ledger):
             entry = self._entry_from_entity(raw_entity=entity)
             prev_entry = self._entry_from_entity(raw_entity=prev_entity) if prev_entity is not None else None
             signature = signer.sign(new_entry=entry, prev_entry=prev_entry)
-            if entity.get("hash") != signature:
+            if entity.get("hash") != signature or self._patch_missing_strategy(entry_data=entity):
                 logging.warning(f"entry {entry.name} hash mismatch, recomputing...")
                 entity["hash"] = signature
                 self.table_client.update_entity(entity=entity)

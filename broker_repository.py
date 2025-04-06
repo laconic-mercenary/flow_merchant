@@ -5,9 +5,7 @@ from mexc import MEXC_API
 class BrokerRepository:
     def __init__(self):
         self.__repository = {
-            "stock": IBKRClient(),
-            "crypto": MEXC_API(),
-            "forex": None
+            "crypto": MEXC_API()
         }
 
     def get_security_types(self) -> list:

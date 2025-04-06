@@ -2,6 +2,8 @@
 import uuid
 import logging
 
+from order_strategies import OrderStrategies
+
 class MerchantSignal:
 
     def __init__(self, msg_body):
@@ -73,6 +75,12 @@ class MerchantSignal:
         if flowmerchant.get("action") not in ["buy", "sell"]:
             logging.error(f"Invalid action: {flowmerchant['action']}")
             raise ValueError("Invalid action")
+        
+        # validate strategy
+        strategy = flowmerchant.get("strategy", OrderStrategies.TRAILING_STOP.value)
+        if strategy not in OrderStrategies.__members__.keys():
+            logging.error(f"Invalid strategy: {strategy}")
+            raise ValueError(f"Invalid strategy {strategy}")
 
         # Validate data types
         float(security["price"].get("high", 0.0))
@@ -167,6 +175,9 @@ class MerchantSignal:
         
     def dry_run(self) -> bool:
         return bool(self.flowmerchant.get("dry_run", False))
+    
+    def strategy(self) -> OrderStrategies:
+        return self.flowmerchant.get("strategy", OrderStrategies.TRAILING_STOP)
         
     def notes(self) -> str:
         return self._notes

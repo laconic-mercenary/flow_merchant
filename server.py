@@ -6,8 +6,8 @@ import os
 def APP_ENV_APITOKEN():
     return "MERCHANT_API_TOKEN"
 
-def rx_not_found() -> func.HttpResponse:
-    return func.HttpResponse(status_code=404)
+def rx_not_found(msg:str = "Not Found") -> func.HttpResponse:
+    return func.HttpResponse(status_code=404, body=msg)
 
 def rx_bad_request(msg="bad request") -> func.HttpResponse:
     return func.HttpResponse(msg, status_code=400)

@@ -1,3 +1,4 @@
+from order_strategies import OrderStrategies
 from utils import null_or_empty
 
 import json
@@ -102,14 +103,15 @@ class Projections(dict):
         return equals
 
 class MerchantParams(dict):
-    def __init__(self, high_interval:str, low_interval:str, stoploss_percent:float, takeprofit_percent:float, notes:str, version:int):
+    def __init__(self, high_interval:str, low_interval:str, stoploss_percent:float, takeprofit_percent:float, notes:str, version:int, strategy:OrderStrategies):
         super().__init__(
             high_interval=high_interval, 
             low_interval=low_interval, 
             stoploss_percent=stoploss_percent, 
             takeprofit_percent=takeprofit_percent, 
             notes=notes, 
-            version=version
+            version=version,
+            strategy=strategy
         )
         if null_or_empty(high_interval):
             raise ValueError(f"MerchantParams high_interval is empty")
@@ -128,12 +130,15 @@ class MerchantParams(dict):
                 raise ValueError(f"MerchantParams notes is too long")
         if version is None:
             raise ValueError(f"MerchantParams version is None")
+        if strategy is None:
+            raise ValueError(f"MerchantParams strategy is None")
         self.high_interval = high_interval
         self.low_interval = low_interval
         self.stoploss_percent = stoploss_percent
         self.takeprofit_percent = takeprofit_percent
         self.notes = notes
         self.version = version
+        self.strategy = strategy
 
     def __eq__(self, value) -> bool:
         if not isinstance(value, MerchantParams):
@@ -144,6 +149,7 @@ class MerchantParams(dict):
         equals = equals and self.takeprofit_percent == value.takeprofit_percent
         equals = equals and self.notes == value.notes
         equals = equals and self.version == value.version
+        equals = equals and self.strategy == value.strategy
         return equals
     
 class Order(dict):
@@ -203,6 +209,8 @@ class Order(dict):
             raise ValueError(f"Order dict does not contain metadata: {order_dict}")
         if "merchant_params" not in order_dict:
             raise ValueError(f"Order dict does not contain merchant_params: {order_dict}")
+        if "strategy" not in order_dict.get("merchant_params"):
+            raise ValueError(f"Order dict does not contain strategy: {order_dict}")
         if "projections" not in order_dict:
             raise ValueError(f"Order dict does not contain projections: {order_dict}")
         sub_orders = SubOrders(
@@ -239,7 +247,8 @@ class Order(dict):
             stoploss_percent=order_dict["merchant_params"]["stoploss_percent"],
             takeprofit_percent=order_dict["merchant_params"]["takeprofit_percent"],
             notes=order_dict["merchant_params"]["notes"],
-            version=order_dict["merchant_params"]["version"]
+            version=order_dict["merchant_params"]["version"],
+            strategy=OrderStrategies[order_dict["merchant_params"]["strategy"]]
         )
         projections = Projections(
             profit_without_fees=order_dict["projections"]["profit_without_fees"],
@@ -272,7 +281,7 @@ if __name__ == "__main__":
                     SubOrder("3", {"api_rx": "api_rx"}, 7, 8.0, 9.0)
                 ),
                 metadata=Metadata("1", 1, False),
-                merchant_params=MerchantParams("1", "2", 3.0, 4.0, "5", 6)
+                merchant_params=MerchantParams("1", "2", 3.0, 4.0, "5", 6, OrderStrategies.BRACKET)
             )
 
             json_str = Order.to_json(test_order)
@@ -293,7 +302,7 @@ if __name__ == "__main__":
                     SubOrder("3", {"api_rx": "api_rx"}, 7, 8.0, 9.0)
                 ),
                 metadata=Metadata("1", 1, False),
-                merchant_params=MerchantParams("1", "2", 3.0, 4.0, "5", 6)
+                merchant_params=MerchantParams("1", "2", 3.0, 4.0, "5", 6, OrderStrategies.TRAILING_STOP)
             )
 
             json_str = Order.to_json(test_order)
@@ -312,7 +321,7 @@ if __name__ == "__main__":
                     SubOrder("3", {"api_rx": "api_rx"}, 7, 8.0, 9.0)
                 ),
                 metadata=Metadata("1", 1, False),
-                merchant_params=MerchantParams("1", "2", 3.0, 4.0, "5", 6)
+                merchant_params=MerchantParams("1", "2", 3.0, 4.0, "5", 6, OrderStrategies.BRACKET)
             )
             assert "remove" not in test_order
             test_order.update({"remove": True})
@@ -328,7 +337,7 @@ if __name__ == "__main__":
                     SubOrder("3", {"api_rx": "api_rx"}, 7, 8.0, 9.0)
                 ),
                 metadata=Metadata("1", 1, False),
-                merchant_params=MerchantParams("1", "2", 3.0, 4.0, "5", 6)
+                merchant_params=MerchantParams("1", "2", 3.0, 4.0, "5", 6, OrderStrategies.TRAILING_STOP)
             )
             test_order.metadata.id = str(999)
             tmp = json.dumps(test_order)
@@ -356,7 +365,7 @@ if __name__ == "__main__":
                     SubOrder("2", {"api_rx": "api_rx"}, 4, 5.0, 6.0),
                     SubOrder("3", {"api_rx": "api_rx"}, 7, 8.0, 9.0)
                 ),
-                merchant_params=MerchantParams("1", "2", 3.0, 4.0, "5", 6)
+                merchant_params=MerchantParams("1", "2", 3.0, 4.0, "5", 6, OrderStrategies.TRAILING_STOP)
             )
             tmp4 = json.dumps(test_order)
             tmp4 = json.loads(tmp4)

@@ -1,3 +1,4 @@
+import datetime
 import random
 import time
 
@@ -7,24 +8,37 @@ class consts:
         return 1000
 
     @staticmethod
-    def ONE_HOUR_IN_SECS() -> int:
-        return 60 * 60
+    def ONE_HOUR_IN_SECS(hours:int = 1) -> int:
+        return 60 * 60 * int(hours)
     
     @staticmethod
-    def ONE_DAY_IN_SECS() -> int:
-        return 24 * consts.ONE_HOUR_IN_SECS()
+    def ONE_DAY_IN_SECS(days:int=1) -> int:
+        return consts.ONE_HOUR_IN_SECS(hours=24) * int(days)
     
     @staticmethod
-    def ONE_WEEK_IN_SECS() -> int:
-        return 7 * consts.ONE_DAY_IN_SECS()
+    def ONE_WEEK_IN_SECS(weeks:int=1) -> int:
+        return consts.ONE_DAY_IN_SECS(days=7) * int(weeks)
     
     @staticmethod
     def ONE_MONTH_IN_SECS() -> int:
-        return 30 * consts.ONE_DAY_IN_SECS()
+        return consts.ONE_DAY_IN_SECS(days=30)
 
     @staticmethod
     def ONE_YEAR_IN_SECS() -> int:
-        return 365 * consts.ONE_DAY_IN_SECS()
+        return consts.ONE_DAY_IN_SECS(days=365)
+    
+def pause_thread(seconds:float) -> None:
+    time.sleep(seconds)
+    
+def time_from_timestamp(timestamp:int) -> str:
+    if timestamp is None:
+        return ValueError("timestamp is None")
+    if timestamp < 0:
+        return ValueError("timestamp is negative")
+    return datetime.datetime.fromtimestamp(timestamp, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    
+def time_utc_as_str() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 def unix_timestamp_secs_dec() -> float:
     return float(unix_timestamp_ms()) / float(consts.MILLIS_IN_SECONDS())

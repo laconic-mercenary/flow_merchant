@@ -13,10 +13,12 @@ from live_capable import LiveCapable
 from merchant_keys import keys, state, action
 from merchant_order import Order
 from merchant_signal import MerchantSignal
-from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelable, DryRunnable
+from order_capable import Broker, MarketOrderable, StopMarketOrderable, OrderCancelable, DryRunnable
 from order_strategy import OrderStrategy
+from order_strategies import OrderStrategies
+from security import order_digest
 from transactions import calculate_stop_loss, calculate_take_profit
-from utils import unix_timestamp_secs, unix_timestamp_ms, roll_dice_10percent
+from utils import unix_timestamp_secs, unix_timestamp_ms, roll_dice_10percent, null_or_empty, consts as util_consts
 
 class cfg:
     @staticmethod
@@ -36,6 +38,11 @@ class cfg:
     @staticmethod
     def TABLE_NAME():
         return "flowmerchant"
+    
+class SellResult:
+    def __init__(self, order: Order, api_results:dict) -> None:
+        self.order = order
+        self.api_results = api_results
 
 class Merchant:
     def __init__(self, table_service: TableServiceClient, broker: Broker) -> None:
@@ -57,6 +64,76 @@ class Merchant:
         self.on_state_change = eventkit.Event("on_state_change")
         self.on_order_placed = eventkit.Event("on_order_placed")
         self.on_positions_check = eventkit.Event("on_positions_check")
+
+    ### Selling
+
+    def sell(self, identifier: str) -> SellResult:
+        logging.debug(f"sell()")
+        if null_or_empty(identifier):
+            raise ValueError("identifier cannot be null or empty")
+        current_positions = self._query_current_positions()
+        for position in current_positions:
+            position_order_list = json.loads(position.get(keys.BROKER_DATA()))
+            for order_dict in position_order_list:
+                order = Order.from_dict(order_dict)
+                order_sell_id = order_digest(order)
+                if order_sell_id == identifier:
+                    logging.info(f"Selling {order}")
+                    api_results = self._broker_sell_order(order=order)
+                    self._remove_order_from_storage(position=position, removal_order=order)
+                    return SellResult(order=order, api_results=api_results)
+        logging.warning(f"Unable to find order with identifier {identifier}")
+        return None
+
+    def _broker_sell_order(self, order: Order) -> dict:
+        logging.debug(f"_broker_sell_order()")
+        if not isinstance(self.broker, MarketOrderable):
+            raise ValueError("Broker must be MarketOrderable")
+        if order.metadata.is_dry_run:
+            if not isinstance(self.broker, DryRunnable):
+                raise ValueError("Broker must be DryRunnable")
+        results = {}
+        if isinstance(self.broker, StopMarketOrderable):
+            if not isinstance(self.broker, OrderCancelable):
+                raise ValueError("Broker must be OrderCancelable")
+            cancel_result = self.broker.cancel_order(
+                ticker=order.ticker, 
+                order_id=order.sub_orders.stop_loss.id
+            )
+            results.update({"cancel_result": cancel_result})
+        
+        execute_market_order = self.broker.place_market_order if not order.metadata.is_dry_run else self.broker.place_market_order_test
+        sell_result_api = execute_market_order(
+                                ticker=order.ticker,
+                                action="SELL",
+                                contracts=order.sub_orders.main_order.contracts
+                            )
+        sell_result = self.broker.standardize_market_order(market_order_result=sell_result_api)
+        logging.info(f"Sold order {order}, with result {sell_result}")
+        results.update({
+            "_market_order_sell_result_broker_api": sell_result_api,
+            "market_order_sell_result": sell_result
+        })
+        return results
+        
+    def _remove_order_from_storage(self, position:dict, removal_order:Order) -> None:
+        position_order_list = json.loads(position.get(keys.BROKER_DATA()))
+        removal_id = order_digest(removal_order)
+        new_order_list = []
+        for order_dict in position_order_list:
+            if order_digest(Order.from_dict(order_dict)) != removal_id:
+                new_order_list.append(order_dict)
+        if len(new_order_list) != 0:
+            position[keys.BROKER_DATA()] = json.dumps(new_order_list)
+            self._sync_with_storage(state=position)
+            logging.info(f"Removed order {removal_order} from storage, order list went from size {len(position_order_list)} to {len(new_order_list)}")
+        else:
+            table_client = self.table_service.get_table_client(table_name=self.TABLE_NAME)    
+            table_client.delete_entity(
+                partition_key=position[keys.PARTITIONKEY()], 
+                row_key=position[keys.ROWKEY()]
+            )
+            logging.info(f"Deleted position {position} - no remaining orders to track")
 
     ### Positions
 
@@ -117,10 +194,6 @@ class Merchant:
                 results["positions"]["winners"].extend(check_result["orders"]["winners"])
                 results["positions"]["leaders"].extend(check_result["orders"]["leaders"])
                 results["positions"]["laggards"].extend(check_result["orders"]["laggards"])
-
-                ## TODO remove me after testing the non dry run flow
-                if "_stop_order_info" in results:
-                    raise ValueError(f"!!! check the following for the status field (in _original): {results.get('_stop_order_info')}")
         return results
 
 
@@ -159,22 +232,25 @@ class Merchant:
             ### TODO
             ### the below is not reliable for determining if the stop loss triggered or not
             ### need to determine the correct status to query on the order
-            if not is_dry_run:
-                stop_loss_order_info = self.broker.get_order(ticker=ticker, order_id=stop_loss_order_id)
-                logging.info(f"(from broker) stop loss order info: {stop_loss_order_info}")
-                if stop_loss_order_info.get("ready"):
-                    logging.warning(f"Stop loss was triggered for {ticker} -- according to broker")
-                    ## kinda hacky but reuses the logic below
-                    stop_loss_price = take_profit_price - 1.0
-                    current_price = stop_loss_price - 1.0
-                results.update({ "_stop_order_info": stop_loss_order_info })
+            # if not is_dry_run:
+            #     stop_loss_order_info = self.broker.get_order(ticker=ticker, order_id=stop_loss_order_id)
+            #     logging.info(f"(from broker) stop loss order info: {stop_loss_order_info}")
+            #     if stop_loss_order_info.get("ready"):
+            #         logging.warning(f"Stop loss was triggered for {ticker} -- according to broker")
+            #         ## kinda hacky but reuses the logic below
+            #         stop_loss_price = take_profit_price - 1.0
+            #         current_price = stop_loss_price - 1.0
 
             if current_price <= stop_loss_price:
                 logging.info(f"stop loss {stop_loss_price} hit for {ticker} at {current_price}")
                 self._stop_loss_reached(
                     order=order_dict,
                     results=results,
-                    strategy=strategy
+                    strategy=strategy,
+                    merchant_params={ 
+                        "current_price": current_price,
+                        "dry_run_order": is_dry_run
+                    }
                 )
             else:
                 if current_price >= take_profit_price:
@@ -214,7 +290,12 @@ class Merchant:
             results["orders"]["leaders"].append(order.__dict__)
             new_order_list.append(order.__dict__)
 
-    def _stop_loss_reached(self, order:Order, results:dict, strategy:OrderStrategy) -> None:
+    def _stop_loss_reached(self, order:Order, results:dict, strategy:OrderStrategy, merchant_params:dict = {}) -> None:
+        handle_result = strategy.handle_stop_loss(
+                            broker=self.broker, 
+                            order=order,
+                            merchant_params=merchant_params
+                        )
         results.update({ "updated": True })
         if order.projections.loss_without_fees > 0.0:
             results["orders"]["winners"].append(order.__dict__)
@@ -229,12 +310,6 @@ class Merchant:
         if not isinstance(self.broker, MarketOrderable):
             logging.warning("Broker is not MarketOrderable - will skip checking positions")
             result = False
-        if not isinstance(self.broker, LimitOrderable):
-            logging.warning("Broker is not LimitOrderable - will skip checking positions")
-            result = False
-        if not isinstance(self.broker, OrderCancelable):
-            logging.warning("Broker is not OrderCancelable - will skip checking positions")
-            result = False
         return result
 
     def _query_current_positions(self) -> list: 
@@ -244,7 +319,7 @@ class Merchant:
     def _purge_old_positions(self) -> dict:
         table_client =  self.table_service.get_table_client(table_name=self.TABLE_NAME)
         all_positions = list(table_client.list_entities())
-        one_year_old_ts = unix_timestamp_secs() - (365 * 24 * 60 * 60)
+        one_year_old_ts = unix_timestamp_secs() - util_consts.ONE_YEAR_IN_SECS()
         for position in all_positions:
             last_action_time = position.get(keys.LAST_ACTION_TIME())
             if one_year_old_ts > last_action_time:
@@ -349,8 +424,7 @@ class Merchant:
             ### in this case we go straight to buying (shopping -> buying is for confluence)
             logging.warning(f"low and high are the same, going straight to buying")
             self._start_buying()
-            self._handle_signal_when_buying(signal)
-            return True
+            return self._handle_signal_when_buying(signal)
         else:
             if signal.interval() == self.high_interval():
                 if signal.action() == action.BUY():
@@ -376,29 +450,43 @@ class Merchant:
     
     def _handle_signal_when_selling(self, signal: MerchantSignal) -> bool:
         logging.debug(f"_handle_signal_when_selling()")
-        ## this is one trade-per confluence range
-        ## so if I trade on the 5m and get confluence on the 1hr, I will only
-        ## make 1 trade the entire time i have confluence
-        if signal.action() == action.SELL():
-            ## do nothing - allow take profit and stop loss to trigger
-            self._start_resting()
-            return True
-        return False
+        #### the selling phase means we have already placed an order and are waiting for 
+        #### the results - which is handled by a separate worker ( see check_positions() )
+
+        if signal.action() == action.BUY():    
+            ## In multi-trade mode, we can have overlapping orders of the same asset for one merchant
+            if self.multitrade_mode():
+                self._start_buying()
+                return self._handle_signal_when_buying(signal=signal)
+            else:    
+                ## We have a BUY Signal and we are not in multi-trade mode
+                if self._has_open_orders(signal=signal):
+                    ## remain in the selling phase until these orders are sold
+                    logging.info(f"merchant {self.merchant_id()} has open orders, will skip this buy signal for {signal.ticker()}")
+                    return False
+                else:
+                    ## we could go to the resting phase, but why waste this opportunity if it is indeed
+                    ## a bullish signal?
+                    self._start_buying()
+                    return self._handle_signal_when_buying(signal=signal)
+        
+        self._start_resting()
+        return True
+        
 
     def _handle_signal_when_resting(self, signal: MerchantSignal) -> bool:
         logging.debug(f"_handle_signal_when_resting()")
         now_timestamp_seconds = unix_timestamp_secs()
         rest_interval_seconds = self.rest_interval_minutes() * 60
         if (now_timestamp_seconds > self.last_action_time() + rest_interval_seconds):
-            if cfg.MULTI_TRADE_MODE():
+            if self.multitrade_mode():
                 if signal.interval() == self.low_interval():
                     if signal.action() == action.SELL():
                         self._start_buying()
                         return True
                     elif signal.action() == action.BUY():
                         self._start_buying()
-                        self._handle_signal_when_buying(signal)
-                        return True
+                        return self._handle_signal_when_buying(signal)
                 elif signal.interval() == self.high_interval():
                     if signal.action() == action.BUY():
                         self._start_buying()
@@ -472,9 +560,13 @@ class Merchant:
     ## common
 
     def _strategy_from_signal(self, signal: MerchantSignal) -> OrderStrategy:
+        if signal.strategy() == "bracket":
+            return BracketStrategy()
         return TrailingStopStrategy()
 
     def _strategy_from_order(self, order: Order) -> OrderStrategy:
+        if order.merchant_params.strategy == OrderStrategies.BRACKET:
+            return BracketStrategy()
         return TrailingStopStrategy()
         
     def _new_merchant_id_from_signal(self, signal: MerchantSignal) -> str:
@@ -482,8 +574,16 @@ class Merchant:
 
     def _create_merchant_id(self, ticker: str, low_interval: str, high_interval: str, version: str) -> str:
         return f"{ticker}-{low_interval}-{high_interval}-{version}"
+    
+    def _has_open_orders(self, signal:MerchantSignal) -> bool:
+        orders_str = self.broker_data()
+        orders_list = json.loads(orders_str)
+        return len(orders_list) != 0
 
     ## properties
+
+    def multitrade_mode(self) -> bool:
+        return cfg.MULTI_TRADE_MODE()
 
     def order_strategy(self, strategy: OrderStrategy = None) -> OrderStrategy:
         if strategy is not None:
