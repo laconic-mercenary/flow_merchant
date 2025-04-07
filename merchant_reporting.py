@@ -224,7 +224,7 @@ class MerchantReporting:
                 elapsed_time_ms=elapsed_ms
             )
 
-    def report_ledger_performance(self, ledger:Ledger, signer:Signer, from_timestamp:int = unix_timestamp_secs() - utils_consts.ONE_YEAR_IN_SECS()) -> None:
+    def report_ledger_performance(self, ledger:Ledger, signer:Signer) -> None:
         if not cfg.REPORTING_LEDGER_PERFORMANCE():
             logging.warning("reporting ledger performance is disabled")
             return
@@ -239,10 +239,64 @@ class MerchantReporting:
                 logging.critical(msg)
                 self.report_problem(msg=msg, exc=Exception(msg))
 
+        author = main_author(db=database())
+
+        now = unix_timestamp_secs()
+        report_timeframes = [ 
+            {
+                "title": "Month To Date",
+                "timeframe": now - utils_consts.ONE_MONTH_IN_SECS()
+            },
+            {
+                "title": "24 Hours",
+                "timeframe": now - utils_consts.ONE_DAY_IN_SECS()
+            } 
+        ]
+        embeds = []
+
+        for report_timeframe in report_timeframes:
+            embed = self._embed_ledger_performance(
+                ledger=ledger, 
+                signer=signer, 
+                from_timestamp=report_timeframe.get("timeframe"),
+                title=report_timeframe.get("title")
+            )
+            embeds.append(embed)
+
+        msg = WebhookMessage(
+            username=author.name,
+            avatar_url=author.avatar_url,
+            content=f"Performance Report",
+            embeds=embeds
+        )
+
+        logging.info(f"ledger performance report results: {msg}")
+        DiscordClient().send_webhook_message(msg=msg)
+
+    def _embed_ledger_performance(self, ledger:Ledger, signer:Signer, from_timestamp:int, title:str) -> Embed:
         entries = ledger.get_entries(name=None, from_timestamp=from_timestamp, to_timestamp=unix_timestamp_secs(), include_tests=True)
         
+        author = main_author(db=database())
+
         if len(entries) == 0:
             logging.info(f"No entries found in ledger - will skip analytics and performance reporting")
+            return Embed(
+                author=Author(
+                    name=author.name,
+                    icon_url=author.avatar_url
+                ),
+                title=title,
+                description="No entries in ledger to analyze",
+                color=colors.BLUE(),
+                footer=Footer(
+                    text="End Report",
+                    icon_url=author.avatar_url
+                ),
+                thumbnail=Thumbnail(
+                    url=author.avatar_url
+                ),
+                fields=[]
+            )
         else:
             min_trades = 5
             top_count = 4
@@ -280,8 +334,6 @@ class MerchantReporting:
             ticker_results = ticker_results[:min(len(ticker_results), top_count)]
             ticker_payload = ""
 
-            author = main_author(db=database())
-
             overall_icon = "\U00002211"
             interval_icon = "\u23F0"
             spread_icon = "\U0001F503"
@@ -315,33 +367,23 @@ class MerchantReporting:
                 name=f"By Ticker",
                 value=f"{ticker_payload}"
             ))
-
-            msg=WebhookMessage(
-                username=author.name,
-                avatar_url=author.avatar_url,
-                content=f"Performance Report",
-                embeds=[
-                    Embed(
-                        author=Author(
-                            name=author.name,
-                            icon_url=author.avatar_url
-                        ),
-                        title="Here is my performance so far",
-                        description="By Interval, Spread, and Ticker",
-                        color=colors.BLUE(),
-                        footer=Footer(
-                            text="End Report",
-                            icon_url=author.avatar_url
-                        ),
-                        thumbnail=Thumbnail(
-                            url=author.avatar_url
-                        ),
-                        fields=fields
-                    )
-                ]
+            return Embed(
+                author=Author(
+                    name=author.name,
+                    icon_url=author.avatar_url
+                ),
+                title=title,
+                description="Overall, By Interval, By Spread, and By Ticker",
+                color=colors.BLUE(),
+                footer=Footer(
+                    text="End Report",
+                    icon_url=author.avatar_url
+                ),
+                thumbnail=Thumbnail(
+                    url=author.avatar_url
+                ),
+                fields=fields
             )
-            logging.info(f"ledger performance report results: {msg}")
-            DiscordClient().send_webhook_message(msg=msg)
 
     def report_to_ledger(self, positions:list[dict], ledger:Ledger, signer:Signer) -> None:
         if ledger is None:

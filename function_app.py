@@ -18,27 +18,6 @@ import command_app
 
 app = func.FunctionApp()
 
-@app.route(route="test",
-           methods=["GET"],
-           auth_level=func.AuthLevel.ANONYMOUS)
-def test(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("test() - invoked")
-    
-    from utils import unix_timestamp_secs, consts as util_consts
-
-    reporting = MerchantReporting()
-
-    try:
-        with connect_table_service() as table_service:
-            table_name = "fmorderledger"
-            table_client = table_service.get_table_client(table_name=table_name)
-            table_ledger = TableLedger(table_client=table_client)
-            from_ts = unix_timestamp_secs() - util_consts.ONE_DAY_IN_SECS(days=3)
-            reporting.report_ledger_performance(ledger=table_ledger, signer=HashSigner(), from_timestamp=from_ts)
-    except Exception as e:
-        logging.error(f"error reporting ledger performance - {e}", exc_info=True)
-    return rx_ok()
-
 @app.route(route="positions",
            methods=["GET"],
            auth_level=func.AuthLevel.ANONYMOUS)
@@ -70,12 +49,11 @@ def command(req: func.HttpRequest) -> func.HttpResponse:
         logging.warning("command() - missing instruction or identifier")
         return rx_bad_request()
     try:
-        if is_get(req):
-            return handle_instruction_for_command(
-                req=req, 
-                command=instruction, 
-                identifier=identifier
-            )
+        return handle_instruction_for_command(
+            req=req, 
+            command=instruction, 
+            identifier=identifier
+        )
     except Exception as e:
         logging.error(f"error handling cmd - {e}", exc_info=True)
         report_problem(msg=f"error handling cmd", exc=e)

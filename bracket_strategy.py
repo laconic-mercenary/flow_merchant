@@ -190,11 +190,11 @@ class BracketStrategy(OrderStrategy):
                 results.update({ "cancel_result": cancel_result })
 
         if not merchant_params.get("_skip_market_sell", False):
-            execute_market_order = broker.place_market_order_test if dry_run_mode else broker.place_market_order
-            sell_result = self._execute_market_sell_with_backoff(
+            sell_result = self._execute_market_sell(
                                 ticker=order.ticker,
-                                contracts=order.sub_orders.main_order.contracts, 
-                                execute_fn=execute_market_order
+                                contracts=order.sub_orders.main_order.contracts,
+                                broker=broker,
+                                dry_run_mode=order.metadata.is_dry_run
                             )
             results.update({
                 "complete": True,
@@ -215,10 +215,14 @@ class BracketStrategy(OrderStrategy):
     
     def _execute_market_sell(self, ticker:str, contracts:float, broker:Broker, dry_run_mode:bool) -> dict:
         execute_market_order = broker.place_market_order_test if dry_run_mode else broker.place_market_order
+        attempts = 4
+        pause = 1.0
         return self._execute_market_sell_with_backoff(
                     ticker=ticker,
                     contracts=contracts, 
-                    execute_fn=execute_market_order
+                    execute_fn=execute_market_order,
+                    attempts=attempts,
+                    pause_in_secs=pause
                 )
     
     def _execute_market_sell_with_backoff(self, ticker:str, contracts:float, execute_fn:typing.Callable, attempts:int = 4, pause_in_secs:float = 1.0, tracking_id:str = None) -> dict:
@@ -226,7 +230,6 @@ class BracketStrategy(OrderStrategy):
         contracts_to_sell = contracts
         last_exception:Exception = None
         while backoff_count > 0:
-            backoff_count = backoff_count - 1
             try:
                 return execute_fn(
                     ticker=ticker,
@@ -243,4 +246,7 @@ class BracketStrategy(OrderStrategy):
                 logging.error(f"Error on SELLing order {ticker}, details: {e}. Attempts left: {backoff_count}")
                 pause_thread(seconds=pause_in_secs)
                 last_exception = e
+            finally:
+                backoff_count = backoff_count - 1
+                
         raise ValueError(f"{ticker} failed to SELL, despite multiple attempts and a contract decrease to {contracts_to_sell}, originally {contracts}") from last_exception
