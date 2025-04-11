@@ -243,10 +243,10 @@ class MerchantReporting:
 
         now = unix_timestamp_secs()
         report_timeframes = [ 
-            {
-                "title": "Month To Date",
-                "timeframe": now - utils_consts.ONE_MONTH_IN_SECS()
-            },
+            # {
+            #     "title": "Month To Date",
+            #     "timeframe": now - utils_consts.ONE_MONTH_IN_SECS()
+            # },
             {
                 "title": "24 Hours",
                 "timeframe": now - utils_consts.ONE_DAY_IN_SECS()
@@ -255,13 +255,25 @@ class MerchantReporting:
         embeds = []
 
         for report_timeframe in report_timeframes:
-            embed = self._embed_ledger_performance(
-                ledger=ledger, 
-                signer=signer, 
-                from_timestamp=report_timeframe.get("timeframe"),
-                title=report_timeframe.get("title")
-            )
-            embeds.append(embed)
+            ledger_entries = ledger.get_entries(
+                                    name=None, 
+                                    from_timestamp=report_timeframe.get("timeframe"),
+                                    to_timestamp=now
+                                )
+            entries_by_tag = self._categorize_entries_by_tag(entries=ledger_entries)
+
+            for tag in entries_by_tag:
+                tagged_entries = entries_by_tag.get(tag)
+                embed = self._embed_from_ledger_entries(
+                            entries=tagged_entries, 
+                            title=f"{report_timeframe.get('title')} - {tag}"
+                        )
+                embeds.append(embed)
+
+        embed_limit = 10
+        if len(embeds) > embed_limit:
+            logging.warning(f"reached discord embed limit of {embed_limit} - truncating report...")
+            embeds = embeds[:embed_limit]
 
         msg = WebhookMessage(
             username=author.name,
@@ -273,9 +285,21 @@ class MerchantReporting:
         logging.info(f"ledger performance report results: {msg}")
         DiscordClient().send_webhook_message(msg=msg)
 
-    def _embed_ledger_performance(self, ledger:Ledger, signer:Signer, from_timestamp:int, title:str) -> Embed:
-        entries = ledger.get_entries(name=None, from_timestamp=from_timestamp, to_timestamp=unix_timestamp_secs(), include_tests=True)
-        
+    def _categorize_entries_by_tag(self, entries:list[Entry]) -> dict:
+        results = {
+            "All": []
+        }
+        for entry in entries:
+            order = Order.from_dict(entry.data)
+            tags = order.metadata.tags
+            for tag in tags:
+                if tag not in results:
+                    results[tag] = []
+                results[tag].append(entry)
+            results["All"].append(entry)
+        return results
+
+    def _embed_from_ledger_entries(self, entries:list[Entry], title:str) -> Embed:
         author = main_author(db=database())
 
         if len(entries) == 0:
@@ -367,6 +391,9 @@ class MerchantReporting:
                 name=f"By Ticker",
                 value=f"{ticker_payload}"
             ))
+
+            author = main_author(db=database())
+
             return Embed(
                 author=Author(
                     name=author.name,
@@ -384,6 +411,15 @@ class MerchantReporting:
                 ),
                 fields=fields
             )
+
+    def _embed_from_ledger_performance(self, ledger:Ledger, signer:Signer, from_timestamp:int, title:str) -> Embed:
+        entries = ledger.get_entries(
+                        name=None, 
+                        from_timestamp=from_timestamp, 
+                        to_timestamp=unix_timestamp_secs(), 
+                        include_tests=True
+                    )
+        return self._embed_from_ledger_entries(entries=entries, title=title)
 
     def report_to_ledger(self, positions:list[dict], ledger:Ledger, signer:Signer) -> None:
         if ledger is None:

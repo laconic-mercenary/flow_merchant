@@ -18,18 +18,38 @@ class MerchantSignal:
         self.__id = str(uuid.uuid4())
 
     @staticmethod
-    def parse(msg_body):
+    def parse(msg_body:dict):
         if not msg_body:
             raise ValueError("Message body cannot be null")
+        if not isinstance(msg_body, dict):
+            raise ValueError("Message body must be a dictionary")
 
         # Validate metadata
         metadata = msg_body.get("metadata")
         if not metadata:
             logging.error("Metadata is missing")
-            raise ValueError("Metadata is required")
+            raise ValueError(f"Metadata is required: {msg_body}")
         if "key" not in metadata:
-            logging.error("API key is missing in metadata")
-            raise ValueError("API key is required in metadata")
+            msg = "API key is missing in metadata: {msg_body}"
+            logging.error(msg)
+            raise ValueError(msg)
+        if "tags" in metadata:
+            if not isinstance(metadata["tags"], str):
+                raise ValueError(f"Tags must be a comma separated string: {msg_body}")
+            tags_str = metadata["tags"].strip()
+            if len(tags_str) == 0:
+                raise ValueError(f"Tags string is empty: {msg_body}")
+            if len(tags_str) > 256:
+                raise ValueError(f"Tags string exceeds 256 characters: {msg_body}")
+            tags = tags_str.split(",")
+            for tag in tags:
+                _tag = tag.strip()
+                if len(_tag) > 64:
+                    raise ValueError(f"Tag exceeds 64 characters: {_tag}. Body: {msg_body}")
+                if not _tag.isalnum():
+                    raise ValueError(f"Tag must be alphanumeric: {_tag}. Body: {msg_body}")
+                if not _tag == _tag.lower():
+                    raise ValueError(f"Tag must be lowercase: {_tag}. Body: {msg_body}")
 
         # Validate security
         security = msg_body.get("security")
@@ -178,7 +198,14 @@ class MerchantSignal:
     
     def strategy(self) -> OrderStrategies:
         return self.flowmerchant.get("strategy", OrderStrategies.TRAILING_STOP)
-        
+    
+    def tags(self) -> list[str]:
+        _tags = self.metadata.get("tags", [])
+        if isinstance(_tags, str):
+            _tags = _tags.split(",")
+            _tags = [_t.strip().lower() for _t in _tags]
+        return _tags
+    
     def notes(self) -> str:
         return self._notes
     

@@ -142,7 +142,8 @@ class BracketStrategy(OrderStrategy):
             metadata = Metadata(
                 id = str(uuid.uuid4()),
                 time_created = unix_timestamp_ms(),
-                is_dry_run = dry_run_mode
+                is_dry_run = dry_run_mode,
+                tags=signal.tags()
             ),
             merchant_params = MerchantParams(
                 high_interval = signal.high_interval(),

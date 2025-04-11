@@ -1,4 +1,4 @@
-from order_strategies import OrderStrategies
+from order_strategies import OrderStrategies, strategy_from_str
 from utils import null_or_empty
 
 import json
@@ -58,11 +58,12 @@ class SubOrders(dict):
         return equals
 
 class Metadata(dict):
-    def __init__(self, id:str, time_created:int, is_dry_run:bool):
+    def __init__(self, id:str, time_created:int, is_dry_run:bool, tags:list[str] = []):
         super().__init__(
             id=id, 
             time_created=time_created, 
-            is_dry_run=is_dry_run
+            is_dry_run=is_dry_run,
+            tags=tags
         )
         if null_or_empty(id):
             raise ValueError(f"Metadata id is empty")
@@ -70,9 +71,12 @@ class Metadata(dict):
             raise ValueError(f"Metadata time_created is None")
         if is_dry_run is None:
             is_dry_run = False
+        if tags is None:
+            tags = []
         self.id = id
         self.time_created = time_created
         self.is_dry_run = is_dry_run
+        self.tags = tags
 
     def __eq__(self, value) -> bool:
         if not isinstance(value, Metadata):
@@ -80,6 +84,7 @@ class Metadata(dict):
         equals = self.id == value.id
         equals = equals and self.time_created == value.time_created
         equals = equals and self.is_dry_run == value.is_dry_run
+        equals = equals and self.tags == value.tags
         return equals
     
 class Projections(dict):
@@ -239,7 +244,8 @@ class Order(dict):
         metadata = Metadata(
             id=order_dict["metadata"]["id"],
             time_created=order_dict["metadata"]["time_created"],
-            is_dry_run=order_dict["metadata"]["is_dry_run"]
+            is_dry_run=order_dict["metadata"]["is_dry_run"],
+            tags=[] if "tags" not in order_dict["metadata"] else order_dict["metadata"]["tags"]
         )
         merchant_params = MerchantParams(
             high_interval=order_dict["merchant_params"]["high_interval"],
@@ -248,7 +254,7 @@ class Order(dict):
             takeprofit_percent=order_dict["merchant_params"]["takeprofit_percent"],
             notes=order_dict["merchant_params"]["notes"],
             version=order_dict["merchant_params"]["version"],
-            strategy=OrderStrategies[order_dict["merchant_params"]["strategy"]]
+            strategy=strategy_from_str(order_dict["merchant_params"]["strategy"])
         )
         projections = Projections(
             profit_without_fees=order_dict["projections"]["profit_without_fees"],
