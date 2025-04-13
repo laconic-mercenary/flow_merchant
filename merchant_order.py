@@ -1,4 +1,4 @@
-from order_strategies import OrderStrategies, strategy_from_str
+from order_strategies import OrderStrategies, strategy_enum_from_str
 from utils import null_or_empty
 
 import json
@@ -254,7 +254,7 @@ class Order(dict):
             takeprofit_percent=order_dict["merchant_params"]["takeprofit_percent"],
             notes=order_dict["merchant_params"]["notes"],
             version=order_dict["merchant_params"]["version"],
-            strategy=strategy_from_str(order_dict["merchant_params"]["strategy"])
+            strategy=strategy_enum_from_str(order_dict["merchant_params"]["strategy"])
         )
         projections = Projections(
             profit_without_fees=order_dict["projections"]["profit_without_fees"],

@@ -97,12 +97,14 @@ def handle_for_positions(req: func.HttpRequest) -> func.HttpResponse:
     return rx_not_found()
 
 def handle_for_signals(req: func.HttpRequest) -> func.HttpResponse:
-    headers = get_headers(req)
-    logging.info(f"Trading View headers: {headers}")
-    message_body = get_json_body(req)
-    logging.info(f"received merchant signal: {message_body}")
-
+    headers = None
+    message_body = None
     try:
+        headers = get_headers(req)
+        logging.info(f"Trading View headers: {headers}")
+        message_body = get_json_body(req)
+        logging.info(f"received merchant signal: {message_body}")
+
         signal = MerchantSignal.parse(message_body)
         
         if not is_authorized(signal.api_token()):

@@ -15,7 +15,7 @@ from merchant_order import Order
 from merchant_signal import MerchantSignal
 from order_capable import Broker, MarketOrderable, StopMarketOrderable, OrderCancelable, DryRunnable
 from order_strategy import OrderStrategy
-from order_strategies import OrderStrategies
+from order_strategies import OrderStrategies, strategy_enum_from_str
 from security import order_digest
 from transactions import calculate_stop_loss, calculate_take_profit
 from utils import unix_timestamp_secs, unix_timestamp_ms, roll_dice_10percent, null_or_empty, consts as util_consts
@@ -28,6 +28,14 @@ class cfg:
     @staticmethod
     def MULTI_TRADE_MODE() -> bool:
         return os.environ.get("MERCHANT_MULTI_TRADE_MODE", "false").lower() == "true"
+    
+    @staticmethod
+    def SIGNAL_ALLOW_LIST() -> list[str]:
+        raw_list = os.environ.get("MERCHANT_SIGNAL_ALLOW_LIST", [])
+        if isinstance(raw_list, str):
+            raw_list = raw_list.split(",")
+            raw_list = [ entry.strip() for entry in raw_list ]
+        return raw_list
 
     @staticmethod
     def DRY_RUN_EXCEPTIONS() -> list[str]:
@@ -123,17 +131,16 @@ class Merchant:
         for order_dict in position_order_list:
             if order_digest(Order.from_dict(order_dict)) != removal_id:
                 new_order_list.append(order_dict)
-        if len(new_order_list) != 0:
-            position[keys.BROKER_DATA()] = json.dumps(new_order_list)
-            self._sync_with_storage(state=position)
-            logging.info(f"Removed order {removal_order} from storage, order list went from size {len(position_order_list)} to {len(new_order_list)}")
-        else:
-            table_client = self.table_service.get_table_client(table_name=self.TABLE_NAME)    
-            table_client.delete_entity(
-                partition_key=position[keys.PARTITIONKEY()], 
-                row_key=position[keys.ROWKEY()]
-            )
-            logging.info(f"Deleted position {position} - no remaining orders to track")
+        position[keys.BROKER_DATA()] = json.dumps(new_order_list)
+        self._sync_with_storage(state=position)
+        logging.info(f"Removed order {removal_order} from storage, order list went from size {len(position_order_list)} to {len(new_order_list)}")
+        # else:
+        #     table_client = self.table_service.get_table_client(table_name=self.TABLE_NAME)    
+        #     table_client.delete_entity(
+        #         partition_key=position[keys.PARTITIONKEY()], 
+        #         row_key=position[keys.ROWKEY()]
+        #     )
+        #     logging.info(f"Deleted position {position} - no remaining orders to track")
 
     ### Positions
 
@@ -344,9 +351,17 @@ class Merchant:
     
     ### Signals
 
+    def _is_allowed_signal(self, signal: MerchantSignal) -> bool:
+        if len(cfg.SIGNAL_ALLOW_LIST()) != 0:
+            return signal.ticker() in cfg.SIGNAL_ALLOW_LIST()
+        return True
+
     def handle_market_signal(self, signal: MerchantSignal) -> None:
         logging.debug(f"handle_market_signal() - {signal.id()}")
         logging.info(f"received signal - id={signal.id()} - {signal.info()}")
+        if not self._is_allowed_signal(signal):
+            logging.warning(f"signal not allowed - id={signal.id()}. Allowed signals are {cfg.SIGNAL_ALLOW_LIST()}")
+            return
         self.merchant_id(signal)
         self.on_signal_received.emit(self.merchant_id(), signal)
         try:
@@ -460,7 +475,7 @@ class Merchant:
                 return self._handle_signal_when_buying(signal=signal)
             else:    
                 ## We have a BUY Signal and we are not in multi-trade mode
-                if self._has_open_orders(signal=signal):
+                if self._has_open_orders():
                     ## remain in the selling phase until these orders are sold
                     logging.info(f"merchant {self.merchant_id()} has open orders, will skip this buy signal for {signal.ticker()}")
                     return False
@@ -559,15 +574,21 @@ class Merchant:
 
     ## common
 
-    def _strategy_from_signal(self, signal: MerchantSignal) -> OrderStrategy:
-        if signal.strategy() == "bracket":
+    def _strategy_from_enum(self, strategy_enum:OrderStrategies) -> OrderStrategy:
+        if not isinstance(strategy_enum, OrderStrategies):
+            raise TypeError(f"strategy_enum must be an instance of OrderStrategies, not {type(strategy_enum)}")
+        if strategy_enum == OrderStrategies.BRACKET:
             return BracketStrategy()
-        return TrailingStopStrategy()
+        elif strategy_enum == OrderStrategies.TRAILING_STOP:
+            return TrailingStopStrategy()
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
 
+    def _strategy_from_signal(self, signal: MerchantSignal) -> OrderStrategy:
+        return self._strategy_from_enum(signal.strategy())
+        
     def _strategy_from_order(self, order: Order) -> OrderStrategy:
-        if order.merchant_params.strategy == OrderStrategies.BRACKET:
-            return BracketStrategy()
-        return TrailingStopStrategy()
+        return self._strategy_from_enum(order.merchant_params.strategy)
         
     def _new_merchant_id_from_signal(self, signal: MerchantSignal) -> str:
         return self._create_merchant_id(signal.ticker(), signal.low_interval(), signal.high_interval(), signal.version())
@@ -575,7 +596,7 @@ class Merchant:
     def _create_merchant_id(self, ticker: str, low_interval: str, high_interval: str, version: str) -> str:
         return f"{ticker}-{low_interval}-{high_interval}-{version}"
     
-    def _has_open_orders(self, signal:MerchantSignal) -> bool:
+    def _has_open_orders(self) -> bool:
         orders_str = self.broker_data()
         orders_list = json.loads(orders_str)
         return len(orders_list) != 0
