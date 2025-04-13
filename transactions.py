@@ -1,3 +1,5 @@
+import enum
+
 from merchant_signal import MerchantSignal
 from merchant_keys import keys as mkeys
 from merchant_order import Order
@@ -85,3 +87,23 @@ def safety_check(close_price: float, take_profit_price: float, stop_loss_price: 
     if quantity <= 0.0:
         raise ValueError(f"Quantity {quantity} is less than or eq 0")
     
+class TransactionAction(str, enum.Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+class Transaction:
+    def __init__(self, action:TransactionAction, quantity:float, price:float):
+        if not isinstance(action, TransactionAction):
+            raise TypeError(f"Action must be a TransactionAction, got {type(action)}")
+        if not isinstance(quantity, float):
+            raise TypeError(f"Quantity must be a number, got {type(quantity)}")
+        if not isinstance(price, float):
+            raise TypeError(f"Price must be a number, got {type(price)}")
+        self.action = action
+        self.quantity = quantity
+        self.price = price
+
+    def __eq__(self, value):
+        if not isinstance(value, Transaction):
+            return False
+        return self.action == value.action and self.quantity == value.quantity and self.price == value.price

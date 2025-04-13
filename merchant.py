@@ -221,20 +221,20 @@ class Merchant:
         new_order_list = []
 
         for order_dict in order_list:
-            order_dict:Order = Order.from_dict(order_dict)
-            main_order = order_dict.sub_orders.main_order
-            stop_loss_order = order_dict.sub_orders.stop_loss
-            take_profit_order = order_dict.sub_orders.take_profit
+            order:Order = Order.from_dict(order_dict)
+            main_order = order.sub_orders.main_order
+            stop_loss_order = order.sub_orders.stop_loss
+            take_profit_order = order.sub_orders.take_profit
             
-            is_dry_run = order_dict.metadata.is_dry_run
-            current_price = current_prices.get(order_dict.ticker)
+            is_dry_run = order.metadata.is_dry_run
+            current_price = current_prices.get(order.ticker)
             main_order_price = main_order.price
             take_profit_price = take_profit_order.price
             stop_loss_order_id = stop_loss_order.id
             stop_loss_price = stop_loss_order.price
-            strategy = self._strategy_from_order(order=order_dict)
+            strategy = self._strategy_from_order(order=order)
 
-            logging.info(f"Checking position: {ticker}, strategy: {strategy.name()} order:{order_dict}")
+            logging.info(f"Checking position: {ticker}, strategy: {strategy.name()} order:{order}")
 
             ### TODO
             ### the below is not reliable for determining if the stop loss triggered or not
@@ -251,7 +251,7 @@ class Merchant:
             if current_price <= stop_loss_price:
                 logging.info(f"stop loss {stop_loss_price} hit for {ticker} at {current_price}")
                 self._stop_loss_reached(
-                    order=order_dict,
+                    order=order,
                     results=results,
                     strategy=strategy,
                     merchant_params={ 
@@ -263,7 +263,7 @@ class Merchant:
                 if current_price >= take_profit_price:
                     logging.info(f"take profit {take_profit_price} reached for {ticker} at {current_price}")
                     self._take_profit_reached(
-                        order=order_dict, 
+                        order=order, 
                         strategy=strategy, 
                         results=results,
                         new_order_list=new_order_list,
@@ -275,40 +275,46 @@ class Merchant:
                     results.update({ "updated": True })
                 else:
                     if current_price > main_order_price:
-                        results["orders"]["leaders"].append(order_dict.__dict__)
-                        new_order_list.append(order_dict.__dict__)
+                        results["orders"]["leaders"].append(order.__dict__)
+                        new_order_list.append(order.__dict__)
                     else:
-                        results["orders"]["laggards"].append(order_dict.__dict__)
-                        new_order_list.append(order_dict.__dict__)
+                        results["orders"]["laggards"].append(order.__dict__)
+                        new_order_list.append(order.__dict__)
 
         position.update({ keys.BROKER_DATA(): json.dumps(new_order_list) })
 
         return results
     
     def _take_profit_reached(self, order:Order, results:dict, strategy:OrderStrategy, new_order_list:list[dict], merchant_params:dict) -> None:
-        handle_result = strategy.handle_take_profit(
+        handle_tp_result = strategy.handle_take_profit(
                                 broker=self.broker,
                                 order=order,
                                 merchant_params=merchant_params
                             )
-        if handle_result.get("complete", False):
+        if handle_tp_result.complete:
             results["orders"]["winners"].append(order.__dict__)
         else:
             results["orders"]["leaders"].append(order.__dict__)
             new_order_list.append(order.__dict__)
 
     def _stop_loss_reached(self, order:Order, results:dict, strategy:OrderStrategy, merchant_params:dict = {}) -> None:
-        handle_result = strategy.handle_stop_loss(
+        handle_sl_result = strategy.handle_stop_loss(
                             broker=self.broker, 
                             order=order,
                             merchant_params=merchant_params
                         )
+        
+        if not handle_sl_result.complete:
+            ## an unusual state to be in. It means we did not sell even when triggering the stop loss
+            raise ValueError(f"Order did not sell even though stop loss was hit. Order {order}. Stop Loss Result: {handle_sl_result}")
+        
         results.update({ "updated": True })
-        if order.projections.loss_without_fees > 0.0:
+        ### TODO: handle partial fills too
+        if handle_sl_result.transaction.price > order.sub_orders.main_order.price:
             results["orders"]["winners"].append(order.__dict__)
         else:
             results["orders"]["losers"].append(order.__dict__)
-
+        
     def _check_broker(self) -> bool:
         result = True
         if not isinstance(self.broker, LiveCapable):
@@ -508,7 +514,7 @@ class Merchant:
                         return True
             self._start_shopping()
         else:
-            time_left_in_seconds = now_timestamp_seconds - (self.last_action_time() + rest_interval_seconds)
+            time_left_in_seconds = (self.last_action_time() + rest_interval_seconds) - now_timestamp_seconds
             logging.info(f"Resting for another {time_left_in_seconds} seconds")
         return True
 

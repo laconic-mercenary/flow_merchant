@@ -2,6 +2,7 @@
 from bracket_strategy import BracketStrategy
 from broker_exceptions import OrderAlreadyFilledError
 from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelable, DryRunnable, StopMarketOrderable
+from order_strategy import HandleResult
 from live_capable import LiveCapable
 from merchant_keys import keys as mkeys
 from merchant_order import Order, SubOrders, SubOrder, Projections
@@ -16,10 +17,10 @@ class TrailingStopStrategy(BracketStrategy):
     def place_orders(self, broker:Broker, signal:MerchantSignal, merchant_state:dict, merchant_params:dict = {}) -> Order:
         return super().place_orders(broker, signal, merchant_state, merchant_params)
     
-    def handle_stop_loss(self, broker:Broker, order:Order, merchant_params:dict = {}) -> dict:
+    def handle_stop_loss(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
         return super().handle_stop_loss(broker, order, merchant_params)
 
-    def handle_take_profit(self, broker:Broker, order:Order, merchant_params:dict = {}) -> dict:
+    def handle_take_profit(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
         ticker = order.ticker
         current_price = merchant_params.get("current_price")
         dry_run_mode = merchant_params.get("dry_run_order")
@@ -41,7 +42,7 @@ class TrailingStopStrategy(BracketStrategy):
                         dry_run_mode=dry_run_mode
                     )
         
-        if results.get("complete", False):
+        if results.complete:
             return results
         
         order.sub_orders = SubOrders(
@@ -57,7 +58,7 @@ class TrailingStopStrategy(BracketStrategy):
                 price=new_stop_loss,
                 contracts=order.sub_orders.stop_loss.contracts,
                 time=unix_timestamp_ms(),
-                api_rx=results.get("new_stop_loss_order_api", {})
+                api_rx=results.additional_data.get("new_stop_loss_order_api", {})
             ),
             take_profit=SubOrder(
                 id=order.sub_orders.take_profit.id,
@@ -81,24 +82,28 @@ class TrailingStopStrategy(BracketStrategy):
 
         return results
         
-    def _handle_orders(self, broker:Broker, ticker:str, sell_contracts:float, new_stop_loss:float, new_take_profit:float, order:Order, dry_run_mode:bool = False) -> dict:
+    def _handle_orders(self, broker:Broker, ticker:str, sell_contracts:float, new_stop_loss:float, new_take_profit:float, order:Order, dry_run_mode:bool = False) -> HandleResult:
         if not isinstance(broker, MarketOrderable):
             raise ValueError(f"broker must implement MarketOrderable")
-        if not isinstance(broker, DryRunnable):
-            raise ValueError(f"broker must implement DryRunnable")
+        execute_market_order = broker.place_market_order
+        standardize_market_order = broker.standardize_market_order
         
-        execute_market_order = broker.place_market_order_test if dry_run_mode else broker.place_market_order
+        if dry_run_mode:
+            if not isinstance(broker, DryRunnable):
+                raise ValueError(f"broker must implement DryRunnable")
+            execute_market_order = broker.place_market_order_test
         
-        results = {}
+        results = HandleResult(target_order=order, complete=False)
         if sell_contracts != 0.0:
             partial_sell_result_raw = self._execute_market_sell_with_backoff(
                                             ticker=ticker, 
                                             contracts=sell_contracts,
                                             execute_fn=execute_market_order,
+                                            standardize_fn=standardize_market_order,
                                             tracking_id=f"{ticker}_{unix_timestamp_secs()}_partialsell"
                                         )
             partial_sell_result = broker.standardize_market_order(market_order_result=partial_sell_result_raw)
-            results.update({ 
+            results.additional_data.update({ 
                 "main_order_sell": partial_sell_result,
                 "main_order_sell_api": partial_sell_result_raw 
             })
@@ -112,12 +117,12 @@ class TrailingStopStrategy(BracketStrategy):
                                             ticker=ticker,
                                             order_id=order.sub_orders.stop_loss.id,
                                         )
-                results.update({ "stop_loss_cancel": stop_loss_cancel_result })
+                results.additional_data.update({ "stop_loss_cancel": stop_loss_cancel_result })
             except OrderAlreadyFilledError as e:
                 ### cancelling the limit order (the stop loss) failed because apparently
                 ### we were too late. has only happened once so far
                 logging.warning(f"stop loss order already filled, skipping cancel: {e}")
-                results.update({"complete": True})
+                results.complete = True
                 return results
             
             remaining_contracts = order.sub_orders.main_order.contracts - sell_contracts
@@ -129,7 +134,7 @@ class TrailingStopStrategy(BracketStrategy):
                                         broker_params={}
                                     )
             new_stop_loss_result = broker.standardize_limit_order(limit_order_result=new_stop_loss_result_raw)
-            results.update({
+            results.additional_data.update({
                 "new_stop_loss_order": new_stop_loss_result,
                 "new_stop_loss_order_api": new_stop_loss_result_raw
             })
