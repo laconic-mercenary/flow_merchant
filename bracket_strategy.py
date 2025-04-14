@@ -3,10 +3,10 @@ from broker_exceptions import OversoldError, InvalidQuantityScale, ApiError
 from order_strategy import OrderStrategy, HandleResult
 from order_capable import Broker, MarketOrderable, OrderCancelable, DryRunnable, StopMarketOrderable
 from live_capable import LiveCapable
-from merchant_order import Order, MerchantParams, SubOrder, SubOrders, Metadata, Projections
+from merchant_order import Order, MerchantParams, SubOrder, SubOrders, Metadata, Projections, Results
 from merchant_signal import MerchantSignal
 from merchant_keys import keys
-from transactions import calculate_stop_loss, calculate_take_profit, calculate_pnl_from_order, Transaction, TransactionAction
+from transactions import calculate_stop_loss, calculate_take_profit, calculate_pnl, Transaction, TransactionAction
 from utils import unix_timestamp_ms, pause_thread
 
 import logging
@@ -137,6 +137,7 @@ class BracketStrategy(OrderStrategy):
             )
 
         new_order = Order(
+            results=None,
             projections=None,
             ticker = ticker,
             metadata = Metadata(
@@ -160,10 +161,19 @@ class BracketStrategy(OrderStrategy):
                 take_profit = suborder_profit
             )
         )
-        pnl = calculate_pnl_from_order(order=new_order)
+        pnl = calculate_pnl(
+            contracts=new_order.sub_orders.main_order.contracts,
+            main_price=new_order.sub_orders.main_order.price,
+            stop_price=new_order.sub_orders.stop_loss.price,
+            profit_price=new_order.sub_orders.take_profit.price
+        )
         new_order.projections = Projections(
             profit_without_fees = pnl.get("profit_without_fees"),
             loss_without_fees = pnl.get("loss_without_fees")
+        )
+        new_order.results = Results(
+            transaction=None,
+            complete=False
         )
         return new_order
     
@@ -196,6 +206,10 @@ class BracketStrategy(OrderStrategy):
                             )
             results.complete = True
             results.transaction = sell_result
+            order.results = Results(
+                transaction=sell_result,
+                complete=True
+            )
         return results
 
     def handle_stop_loss(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
@@ -230,7 +244,7 @@ class BracketStrategy(OrderStrategy):
             raise ValueError(f"No price found in results: {results}")
         return Transaction(
                 action=TransactionAction.SELL, 
-                quantity=contracts, 
+                quantity=results.get("contracts"), 
                 price=results.get("price")
             )
     

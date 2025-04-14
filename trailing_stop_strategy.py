@@ -5,9 +5,9 @@ from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelab
 from order_strategy import HandleResult
 from live_capable import LiveCapable
 from merchant_keys import keys as mkeys
-from merchant_order import Order, SubOrders, SubOrder, Projections
+from merchant_order import Order, SubOrders, SubOrder, Projections, Results
 from merchant_signal import MerchantSignal
-from transactions import calculate_pnl_from_order
+from transactions import calculate_pnl
 from utils import unix_timestamp_secs, unix_timestamp_ms
 
 import logging
@@ -69,15 +69,21 @@ class TrailingStopStrategy(BracketStrategy):
             )
         )
         
-        pnl = calculate_pnl_from_order(
-                    order=order, 
-                    sell_amount=None, 
+        pnl = calculate_pnl(
+                    contracts=order.sub_orders.main_order.contracts,
+                    main_price=order.sub_orders.main_order.price,
+                    stop_price=order.sub_orders.stop_loss.price,
+                    profit_price=order.sub_orders.take_profit.price,
                     current_price=current_price
                 )
         
         order.projections = Projections(
             profit_without_fees=pnl.get("profit_without_fees"),
             loss_without_fees=pnl.get("loss_without_fees")
+        )
+        order.results = Results(
+            transaction=None,
+            complete=False
         )
 
         return results

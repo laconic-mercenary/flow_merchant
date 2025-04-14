@@ -4,10 +4,11 @@ from ledger_analytics import Analytics
 from merchant_keys import keys as mkeys
 from merchant_order import Order
 from merchant_signal import MerchantSignal
+from merchant import PositionsCheckResult
 from persona import Persona
 from personas import database, main_author, next_laggard_persona, next_leader_persona, next_loser_persona, next_winner_persona
 from security import order_digest
-from transactions import multiply, calculate_percent_diff
+from transactions import multiply, calculate_percent_diff, calculate_pnl
 from utils import unix_timestamp_secs, time_from_timestamp, time_utc_as_str, roll_dice_33percent, consts as utils_consts
 
 import logging
@@ -187,41 +188,32 @@ class MerchantReporting:
             ]
         ))
 
-    def report_check_results(self, results:dict) -> None:
+    def report_check_results(self, results:PositionsCheckResult) -> None:
         if not cfg.REPORTING_CHECK_RESULTS():
             logging.warning("IMPORTANT - check results reporting (winners, leaders, laggards, losers) is currently disabled!")
             return
-        if "positions" not in results:
-            logging.warning(f"merchant_positions_checked() - no current positions - {results}")
+        if results is None:
+            logging.warning(f"merchant_positions_checked() - no results")
             return
-        if "elapsed_ms" not in results:
-            logging.warning(f"merchant_positions_checked() - no elapsed ms - {results}")
+        if results.current_prices is None:
+            logging.warning(f"merchant_positions_checked() - no current price - {results.__dict__}")
             return
-        if "current_prices" not in results:
-            logging.warning(f"merchant_positions_checked() - no current prices - {results}")
+        if results.elapsed_ms is None:
+            logging.warning(f"merchant_positions_checked() - no elapsed ms - {results.__dict__}")
             return
-
-        logging.info(f"merchant_positions_checked() - with the following results: {results}")
         
-        elapsed_ms = results.get("elapsed_ms")
-        current_positions = results.get("positions")
-        current_prices = results.get("current_prices")
-
-        winners = current_positions.get("winners")
-        laggards = current_positions.get("laggards")
-        leaders = current_positions.get("leaders")
-        losers = current_positions.get("losers")
+        logging.info(f"merchant_positions_checked() - with the following results: {results.__dict__}")
         
-        if len(winners) == 0 and len(laggards) == 0 and len(leaders) == 0 and len(losers) == 0:
+        if len(results.winners) == 0 and len(results.laggards) == 0 and len(results.leaders) == 0 and len(results.losers) == 0:
             logging.info(f"merchant_positions_checked() - no positions to report")
         else:
             self._send_check_result(
-                winners=winners, 
-                losers=losers, 
-                leaders=leaders, 
-                laggards=laggards, 
-                current_prices=current_prices,
-                elapsed_time_ms=elapsed_ms
+                winners=results.winners, 
+                losers=results.losers, 
+                leaders=results.leaders, 
+                laggards=results.laggards, 
+                current_prices=results.current_prices,
+                elapsed_time_ms=results.elapsed_ms
             )
 
     def report_ledger_performance(self, ledger:Ledger, signer:Signer) -> None:
@@ -431,8 +423,14 @@ class MerchantReporting:
         for position in positions:
             order = Order.from_dict(position)
             
-            ## ! TODO - only accounts for trailing stop strategy !
-            amount = order.projections.loss_without_fees
+            pnl_dict = calculate_pnl(
+                contracts=order.results.transaction.quantity,
+                main_price=order.sub_orders.main_order.price,
+                current_price=order.results.transaction.price,
+                stop_price=0.0,
+                profit_price=0.0
+            )
+            amount = pnl_dict.get("current_without_fees")
 
             last_entry = ledger.get_latest_entry()
             new_entry = Entry(

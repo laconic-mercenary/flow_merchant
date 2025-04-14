@@ -2,7 +2,6 @@ import enum
 
 from merchant_signal import MerchantSignal
 from merchant_keys import keys as mkeys
-from merchant_order import Order
 
 def multiply(a: float, b: float) -> float:
     if a is None or b is None:
@@ -35,10 +34,10 @@ def calculate_percent_diff(a: float, b: float) -> float:
     x = (a - b) / b
     return abs(x)
 
-def calculate_pnl_from_order(order:Order, sell_amount:float=None, current_price:float=None) -> dict:
-    net_value = multiply(order.sub_orders.main_order.contracts, order.sub_orders.main_order.price)
-    stop_loss_value = multiply(order.sub_orders.main_order.contracts, order.sub_orders.stop_loss.price)
-    take_profit_value = multiply(order.sub_orders.main_order.contracts, order.sub_orders.take_profit.price)
+def calculate_pnl(contracts:float, main_price:float, stop_price:float, profit_price:float, current_price:float=None) -> dict:
+    net_value = multiply(contracts, main_price)
+    stop_loss_value = multiply(contracts, stop_price)
+    take_profit_value = multiply(contracts, profit_price)
     profit_wout_fees = take_profit_value - net_value
     loss_wout_fees = stop_loss_value - net_value
     results = {
@@ -49,7 +48,7 @@ def calculate_pnl_from_order(order:Order, sell_amount:float=None, current_price:
         "take_profit_value": take_profit_value
     }
     if current_price is not None:
-        current_value = multiply(order.sub_orders.main_order.contracts, current_price)
+        current_value = multiply(contracts, current_price)
         results["current_without_fees"] = current_value - net_value
     return results
 
@@ -91,8 +90,13 @@ class TransactionAction(str, enum.Enum):
     BUY = "BUY"
     SELL = "SELL"
 
-class Transaction:
+class Transaction(dict):
     def __init__(self, action:TransactionAction, quantity:float, price:float):
+        super().__init__(
+            action=action,
+            quantity=quantity,
+            price=price
+        )
         if not isinstance(action, TransactionAction):
             raise TypeError(f"Action must be a TransactionAction, got {type(action)}")
         if not isinstance(quantity, float):

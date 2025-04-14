@@ -1,4 +1,5 @@
 from order_strategies import OrderStrategies, strategy_enum_from_str
+from transactions import Transaction, TransactionAction
 from utils import null_or_empty
 
 import json
@@ -106,6 +107,26 @@ class Projections(dict):
         equals = self.profit_without_fees == value.profit_without_fees
         equals = equals and self.loss_without_fees == value.loss_without_fees
         return equals
+    
+class Results(dict):
+    def __init__(self, transaction:Transaction, complete:bool):
+        super().__init__(
+            transaction=transaction,
+            complete=complete
+        )
+        #if transaction is None:
+        #    raise ValueError(f"Results transaction is None")
+        #if not isinstance(transaction, Transaction):
+        #    raise ValueError(f"Results transaction is not a Transaction")
+        self.transaction = transaction
+        self.complete = complete
+
+    def __eq__(self, value) -> bool:
+        if not isinstance(value, Results):
+            return False
+        equals = self.transaction == value.transaction
+        equals = equals and self.complete == value.complete
+        return equals
 
 class MerchantParams(dict):
     def __init__(self, high_interval:str, low_interval:str, stoploss_percent:float, takeprofit_percent:float, notes:str, version:int, strategy:OrderStrategies):
@@ -158,13 +179,14 @@ class MerchantParams(dict):
         return equals
     
 class Order(dict):
-    def __init__(self, ticker:str, sub_orders:SubOrders, metadata:Metadata, merchant_params:MerchantParams, projections:Projections):
+    def __init__(self, ticker:str, sub_orders:SubOrders, metadata:Metadata, merchant_params:MerchantParams, projections:Projections, results:Results):
         super().__init__(
             ticker=ticker, 
             sub_orders=sub_orders, 
             metadata=metadata, 
             merchant_params=merchant_params,
-            projections=projections
+            projections=projections,
+            results=results
         )
         if null_or_empty(ticker):
             raise ValueError(f"Order ticker is empty")
@@ -183,6 +205,7 @@ class Order(dict):
         self.metadata = metadata
         self.merchant_params = merchant_params
         self.projections = projections
+        self.results = results
 
     def __eq__(self, value):
         if not isinstance(value, Order):
@@ -192,10 +215,21 @@ class Order(dict):
         equals = equals and self.metadata == value.metadata
         equals = equals and self.merchant_params == value.merchant_params
         equals = equals and self.projections == value.projections
+        equals = equals and self.results == value.results
         return equals
 
     def to_json(self) -> str:
         return Order.to_json(self)
+
+    def as_copy(self):
+        return Order(
+            ticker=self.ticker,
+            sub_orders=self.sub_orders,
+            metadata=self.metadata,
+            merchant_params=self.merchant_params,
+            projections=self.projections,
+            results=self.results
+        )
     
     def update(self, *args, **kwargs) -> None:
         super().update(*args, **kwargs)
@@ -218,6 +252,8 @@ class Order(dict):
             raise ValueError(f"Order dict does not contain strategy: {order_dict}")
         if "projections" not in order_dict:
             raise ValueError(f"Order dict does not contain projections: {order_dict}")
+        if "results" not in order_dict:
+            raise ValueError(f"Order dict does not contain results: {order_dict}")
         sub_orders = SubOrders(
             main_order=SubOrder(
                 id=order_dict["sub_orders"]["main_order"]["id"],
@@ -260,7 +296,11 @@ class Order(dict):
             profit_without_fees=order_dict["projections"]["profit_without_fees"],
             loss_without_fees=order_dict["projections"]["loss_without_fees"],
         )
-        return Order(ticker=order_dict["ticker"], projections=projections, sub_orders=sub_orders, metadata=metadata, merchant_params=merchant_params)
+        results = Results(
+            transaction=order_dict["results"]["transaction"],
+            complete=order_dict["results"]["complete"]
+        )
+        return Order(ticker=order_dict["ticker"], projections=projections, sub_orders=sub_orders, metadata=metadata, merchant_params=merchant_params, results=results)
 
     @staticmethod
     def from_json(json_str:str):

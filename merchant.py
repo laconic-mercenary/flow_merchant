@@ -11,13 +11,13 @@ from bracket_strategy import BracketStrategy
 from trailing_stop_strategy import TrailingStopStrategy
 from live_capable import LiveCapable
 from merchant_keys import keys, state, action
-from merchant_order import Order
+from merchant_order import Order, Results
 from merchant_signal import MerchantSignal
 from order_capable import Broker, MarketOrderable, StopMarketOrderable, OrderCancelable, DryRunnable
 from order_strategy import OrderStrategy
 from order_strategies import OrderStrategies, strategy_enum_from_str
 from security import order_digest
-from transactions import calculate_stop_loss, calculate_take_profit
+from transactions import calculate_pnl, Transaction, TransactionAction
 from utils import unix_timestamp_secs, unix_timestamp_ms, roll_dice_10percent, null_or_empty, consts as util_consts
 
 class cfg:
@@ -48,10 +48,28 @@ class cfg:
         return "flowmerchant"
     
 class SellResult:
-    def __init__(self, order: Order, api_results:dict) -> None:
+    def __init__(self, order: Order, transaction: Transaction, additional_data: dict = {}) -> None:
+        if order is None:
+            raise ValueError("order cannot be None")
+        if transaction is None:
+            raise ValueError("transaction cannot be None")
         self.order = order
-        self.api_results = api_results
+        self.transaction = transaction
+        self.additional_data = additional_data
 
+class PositionsCheckResult:
+    def __init__(self):
+        self.monitored_tickers:list[str] = []
+        self.winners:list[dict] = []
+        self.losers:list[dict] = []
+        self.laggards:list[dict] = []
+        self.leaders:list[dict] = []
+        self.elapsed_ms:int = None
+        self.current_prices:dict = None
+
+    def __str__(self) -> str:
+        return json.dumps(self.__dict__)
+        
 class Merchant:
     def __init__(self, table_service: TableServiceClient, broker: Broker) -> None:
         if table_service is None:
@@ -87,20 +105,25 @@ class Merchant:
                 order_sell_id = order_digest(order)
                 if order_sell_id == identifier:
                     logging.info(f"Selling {order}")
-                    api_results = self._broker_sell_order(order=order)
+                    results = self._broker_sell_order(order=order)
                     self._remove_order_from_storage(position=position, removal_order=order)
-                    return SellResult(order=order, api_results=api_results)
+                    return results
         logging.warning(f"Unable to find order with identifier {identifier}")
         return None
 
-    def _broker_sell_order(self, order: Order) -> dict:
+    def _broker_sell_order(self, order: Order) -> SellResult:
         logging.debug(f"_broker_sell_order()")
         if not isinstance(self.broker, MarketOrderable):
             raise ValueError("Broker must be MarketOrderable")
+        execute_market_order = self.broker.place_market_order
+        standardize_market_order = self.broker.standardize_market_order
+
         if order.metadata.is_dry_run:
             if not isinstance(self.broker, DryRunnable):
                 raise ValueError("Broker must be DryRunnable")
-        results = {}
+            execute_market_order = self.broker.place_market_order_test
+
+        additional_data = {}
         if isinstance(self.broker, StopMarketOrderable):
             if not isinstance(self.broker, OrderCancelable):
                 raise ValueError("Broker must be OrderCancelable")
@@ -108,22 +131,78 @@ class Merchant:
                 ticker=order.ticker, 
                 order_id=order.sub_orders.stop_loss.id
             )
-            results.update({"cancel_result": cancel_result})
+            additional_data.update({"cancel_result": cancel_result})
         
-        execute_market_order = self.broker.place_market_order if not order.metadata.is_dry_run else self.broker.place_market_order_test
         sell_result_api = execute_market_order(
                                 ticker=order.ticker,
                                 action="SELL",
                                 contracts=order.sub_orders.main_order.contracts
                             )
-        sell_result = self.broker.standardize_market_order(market_order_result=sell_result_api)
-        logging.info(f"Sold order {order}, with result {sell_result}")
-        results.update({
-            "_market_order_sell_result_broker_api": sell_result_api,
-            "market_order_sell_result": sell_result
-        })
-        return results
+        sell_result_dict = standardize_market_order(market_order_result=sell_result_api)
         
+        logging.info(f"Sold order {order}, with result {sell_result_dict}")
+        additional_data.update({
+            "_market_order_sell_result_broker_api": sell_result_api,
+            "market_order_sell_result": sell_result_dict
+        })
+
+        sell_transaction = Transaction(
+                                action=TransactionAction.SELL,
+                                quantity=sell_result_dict.get("contracts"),
+                                price=sell_result_dict.get("price")
+                            )
+
+        order.results = Results(
+                            transaction=sell_transaction,
+                            complete=True
+                        )
+
+        sell_result = SellResult(
+                    order=order,
+                    transaction=sell_transaction,
+                    additional_data=additional_data
+                )
+        
+        self._notify_of_sell(order=order.as_copy(), sell_result=sell_result)
+        
+        return sell_result
+        
+    def _notify_of_sell(self, order:Order, sell_result:SellResult) -> PositionsCheckResult:
+        logging.info(f"Notifying of sell {order}, with result {sell_result}")
+
+        check_result = PositionsCheckResult()
+        check_result.elapsed_ms = 0
+        check_result.laggards = []
+        check_result.leaders = []
+        check_result.winners = []
+        check_result.losers = []
+        check_result.current_prices = {}
+        check_result.monitored_tickers = []
+
+        pnl_dict = calculate_pnl(
+                    contracts=sell_result.transaction.quantity,
+                    main_price=order.sub_orders.main_order.price,
+                    stop_price=0.0,
+                    profit_price=0.0,
+                    current_price=sell_result.transaction.price
+                )
+        
+        ### This is only because downstream reporting (Discord)
+        ### requires current prices be set. Alternatively
+        ### if the broker supports LiveCapable interface, we can 
+        ### query the prices here, but let's avoid API calls
+        check_result.current_prices.update({
+            order.ticker: sell_result.transaction.price
+        })
+
+        pnl = pnl_dict.get("current_without_fees")
+        if pnl > 0.0:
+            check_result.winners = [ order.__dict__ ]
+        else:
+            check_result.losers = [ order.__dict__ ]
+        self.on_positions_check.emit(check_result)
+        return check_result
+
     def _remove_order_from_storage(self, position:dict, removal_order:Order) -> None:
         position_order_list = json.loads(position.get(keys.BROKER_DATA()))
         removal_id = order_digest(removal_order)
@@ -144,23 +223,30 @@ class Merchant:
 
     ### Positions
 
-    def check_positions(self) -> dict:
+    def check_positions(self) -> PositionsCheckResult:
         logging.debug(f"check_positions()")
 
         logging.info(f"checking current positions...")
 
         start_time_ms = unix_timestamp_ms()
-        
+
         results = self._check_positions()
+
+        check_result = PositionsCheckResult()
+        check_result.elapsed_ms = unix_timestamp_ms() - start_time_ms
+        check_result.winners = results["positions"].get("winners", [])
+        check_result.losers = results["positions"].get("losers", [])
+        check_result.laggards = results["positions"].get("laggards", [])
+        check_result.leaders = results["positions"].get("leaders", [])
+        check_result.current_prices = results.get("current_prices")
+        check_result.monitored_tickers = results.get("monitored_tickers")
+
+        self.on_positions_check.emit(check_result)
 
         if roll_dice_10percent():
             self._purge_old_positions()
 
-        results.update({ "elapsed_ms": unix_timestamp_ms() - start_time_ms })
-
-        self.on_positions_check.emit(results)
-
-        return results
+        return check_result
 
     def _check_positions(self) -> dict:
         if not self._check_broker():
@@ -274,12 +360,13 @@ class Merchant:
                     )
                     results.update({ "updated": True })
                 else:
+                    order_result = order.as_copy()
                     if current_price > main_order_price:
-                        results["orders"]["leaders"].append(order.__dict__)
-                        new_order_list.append(order.__dict__)
+                        results["orders"]["leaders"].append(order_result.__dict__)
+                        new_order_list.append(order_result.__dict__)
                     else:
-                        results["orders"]["laggards"].append(order.__dict__)
-                        new_order_list.append(order.__dict__)
+                        results["orders"]["laggards"].append(order_result.__dict__)
+                        new_order_list.append(order_result.__dict__)
 
         position.update({ keys.BROKER_DATA(): json.dumps(new_order_list) })
 
@@ -291,11 +378,12 @@ class Merchant:
                                 order=order,
                                 merchant_params=merchant_params
                             )
+        order_result = order.as_copy()
         if handle_tp_result.complete:
-            results["orders"]["winners"].append(order.__dict__)
+            results["orders"]["winners"].append(order_result.__dict__)
         else:
-            results["orders"]["leaders"].append(order.__dict__)
-            new_order_list.append(order.__dict__)
+            results["orders"]["leaders"].append(order_result.__dict__)
+            new_order_list.append(order_result.__dict__)
 
     def _stop_loss_reached(self, order:Order, results:dict, strategy:OrderStrategy, merchant_params:dict = {}) -> None:
         handle_sl_result = strategy.handle_stop_loss(
@@ -310,10 +398,11 @@ class Merchant:
         
         results.update({ "updated": True })
         ### TODO: handle partial fills too
-        if handle_sl_result.transaction.price > order.sub_orders.main_order.price:
-            results["orders"]["winners"].append(order.__dict__)
+        order_result = order.as_copy()
+        if handle_sl_result.transaction.price > order_result.sub_orders.main_order.price:
+            results["orders"]["winners"].append(order_result.__dict__)
         else:
-            results["orders"]["losers"].append(order.__dict__)
+            results["orders"]["losers"].append(order_result.__dict__)
         
     def _check_broker(self) -> bool:
         result = True

@@ -7,7 +7,7 @@ from azure.data.tables import TableServiceClient, TableClient
 from broker_repository import BrokerRepository
 from merchant_signal import MerchantSignal
 from merchant_order import Order
-from merchant import Merchant
+from merchant import Merchant, PositionsCheckResult
 from merchant_reporting import MerchantReporting
 from server import *
 from signal_enhancements import apply_all
@@ -62,12 +62,13 @@ def command(req: func.HttpRequest) -> func.HttpResponse:
 def connect_table_service() -> TableServiceClient:
     return TableServiceClient.from_connection_string(os.environ["storageAccountConnectionString"])
 
-def handle_instruction_for_command(req: func.HttpRequest, command: str, identifier:str) -> func.HttpResponse:
+def handle_instruction_for_command(req: func.HttpRequest, command:str, identifier:str) -> func.HttpResponse:
     if command == "sell":
         security_type = req.params.get("securityType", "crypto")        
         broker = BrokerRepository().get_for_security(security_type)
         with connect_table_service() as table_service:        
             merchant = Merchant(table_service, broker)
+            subscribe_events(merchant=merchant)
             result = merchant.sell(identifier)
             if result is None:
                 return rx_not_found("Unable to sell - order not found or no longer exists")
@@ -92,7 +93,7 @@ def handle_for_positions(req: func.HttpRequest) -> func.HttpResponse:
         merchant = Merchant(table_service, broker)
         subscribe_events(merchant=merchant)
         results = merchant.check_positions()
-        return rx_json(results)
+        return rx_json(results.__dict__)
     
     return rx_not_found()
 
@@ -169,21 +170,19 @@ def merchant_order_placed(merchant_id: str, order_data: Order) -> None:
         logging.error(f"error reporting order placed - {e}", exc_info=True)
         report_problem(msg=f"error reporting order placed", exc=e)
 
-def merchant_positions_checked(results: dict) -> None:
+def merchant_positions_checked(results: PositionsCheckResult) -> None:
     reporting = MerchantReporting()
     try:
-        reporting.report_check_results(results)
-        current_positions = results.get("positions")
-        winners = current_positions.get("winners")
-        losers = current_positions.get("losers")    
+        reporting.report_check_results(results=results)
+        closed_positions = results.winners + results.losers
+        logging.info(f"reporting to ledger, the following closed positions: {closed_positions}")
         with connect_table_service() as table_service:
             table_name = "fmorderledger"
             table_client = table_service.create_table_if_not_exists(table_name=table_name)
             table_ledger = TableLedger(table_client=table_client)
             table_signer = HashSigner()
             
-            ## TODO support a list of ledgers
-            reporting.report_to_ledger(positions=winners + losers, ledger=table_ledger, signer=table_signer)
+            reporting.report_to_ledger(positions=closed_positions, ledger=table_ledger, signer=table_signer)
             
             ## only trigger a performance report occassionally due to it's processurally expensive nature
             if roll_dice():
