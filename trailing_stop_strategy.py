@@ -83,7 +83,8 @@ class TrailingStopStrategy(BracketStrategy):
         )
         order.results = Results(
             transaction=None,
-            complete=False
+            complete=False,
+            additional_data={}
         )
 
         return results
@@ -151,6 +152,7 @@ class TrailingStopStrategy(BracketStrategy):
         ### important: takeprofit_percent() is > 1.0 (for readability), thus divide by 100.0 first
         ### this was for readability when configuring the trading view alerts 
         pct_deff = order.merchant_params.takeprofit_percent / 100.0
+    
         new_stop_loss = current_price - (current_price * pct_deff)
         new_take_profit = current_price + (current_price * pct_deff)
         return (new_stop_loss, new_take_profit)

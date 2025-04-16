@@ -109,10 +109,11 @@ class Projections(dict):
         return equals
     
 class Results(dict):
-    def __init__(self, transaction:Transaction, complete:bool):
+    def __init__(self, transaction:Transaction, complete:bool, additional_data:dict = {}):
         super().__init__(
             transaction=transaction,
-            complete=complete
+            complete=complete,
+            additional_data=additional_data
         )
         #if transaction is None:
         #    raise ValueError(f"Results transaction is None")
@@ -120,6 +121,7 @@ class Results(dict):
         #    raise ValueError(f"Results transaction is not a Transaction")
         self.transaction = transaction
         self.complete = complete
+        self.additional_data = additional_data
 
     def __eq__(self, value) -> bool:
         if not isinstance(value, Results):
@@ -298,7 +300,8 @@ class Order(dict):
         )
         results = Results(
             transaction=order_dict["results"]["transaction"],
-            complete=order_dict["results"]["complete"]
+            complete=order_dict["results"]["complete"],
+            additional_data=order_dict["results"]["additional_data"] if "additional_data" in order_dict["results"] else {}
         )
         return Order(ticker=order_dict["ticker"], projections=projections, sub_orders=sub_orders, metadata=metadata, merchant_params=merchant_params, results=results)
 

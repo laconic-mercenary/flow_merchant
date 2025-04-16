@@ -41,9 +41,8 @@ def is_health_check(req: func.HttpRequest) -> bool:
     return "health" in req.params
 
 def get_json_body(req: func.HttpRequest) -> dict:
-    if len(req.get_body()) == 0:
-        return {}
-    return req.get_json()
+    body = req.get_body().decode("utf-8")
+    return json.loads(body)
 
 def get_header(req: func.HttpRequest, header_name: str) -> str:
     return req.headers.get(header_name)

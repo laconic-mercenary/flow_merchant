@@ -282,13 +282,13 @@ class MerchantReporting:
             "All": []
         }
         for entry in entries:
-            order = Order.from_dict(entry.data)
-            tags = order.metadata.tags
-            for tag in tags:
+            results["All"].append(entry)
+            for tag in Order.from_dict(entry.data).metadata.tags:
                 if tag not in results:
                     results[tag] = []
                 results[tag].append(entry)
-            results["All"].append(entry)
+        breakdown = [ f"{tag}: {len(results.get(tag))}" for tag in results ]
+        logging.info(f"categorizing entries by tag, total {len(entries)}, breakdown {breakdown}")
         return results
 
     def _embed_from_ledger_entries(self, entries:list[Entry], title:str) -> Embed:
@@ -314,8 +314,8 @@ class MerchantReporting:
                 fields=[]
             )
         else:
-            min_trades = 5
-            top_count = 4
+            min_trades = 1
+            max_analytics_entries = 4
 
             fields = []
 
@@ -332,22 +332,22 @@ class MerchantReporting:
             
             overall_results = overall.results()
             overall_results = [_overall for _overall in overall_results if _overall.total_trades >= min_trades]
-            overall_results = overall_results[:min(len(overall_results), top_count)]
+            overall_results = overall_results[:min(len(overall_results), max_analytics_entries)]
             overall_payload = ""
 
             interval_results = interval_analytics.results()
             interval_results = [_interval for _interval in interval_results if _interval.total_trades >= min_trades]
-            interval_results = interval_results[:min(len(interval_results), top_count)]
+            interval_results = interval_results[:min(len(interval_results), max_analytics_entries)]
             interval_payload = ""
 
             spread_results = spread_analytics.results()
             spread_results = [_spread for _spread in spread_results if _spread.total_trades >= min_trades]
-            spread_results = spread_results[:min(len(spread_results), top_count)]
+            spread_results = spread_results[:min(len(spread_results), max_analytics_entries)]
             spread_payload = ""
 
             ticker_results = ticker_analytics.results()
             ticker_results = [_ticker for _ticker in ticker_results if _ticker.total_trades >= min_trades]
-            ticker_results = ticker_results[:min(len(ticker_results), top_count)]
+            ticker_results = ticker_results[:min(len(ticker_results), max_analytics_entries)]
             ticker_payload = ""
 
             overall_icon = "\U00002211"
@@ -505,13 +505,15 @@ class MerchantReporting:
             
             order_sell_id = order_digest(order=order)
             order_friendly_timestamp = time_from_timestamp(order.metadata.time_created / 1000.0)
+            ### TODO - hardcoded url and also securityType
+            sell_now_link = f"[~SELL NOW~](https://stockton-jpe01-flow-merchant.azurewebsites.net/api/command/sell/{order_sell_id}?securityType=crypto)"
 
             payload = f"PRICE @ {current_price} ({sell_now_per_diff}%) - {sell_now_msg}"
             payload += f"\n{icon_timestamp} _*{order_friendly_timestamp}*_ UTC"
             payload += f"\n{icon_entry} @ {main_price} x {main_contracts} = {main_total}"
             payload += f"\n{icon_stop_loss} @ {stop_price} ({stop_price_per_diff}%) for {potential_loss}"
             payload += f"\n{icon_take_profit} @ {take_profit_price} ({take_profit_per_diff}%) for {potential_profit}"
-            payload += f"\n{icon_sell} [~SELL NOW~](https://stockton-jpe01-flow-merchant.azurewebsites.net/api/command/sell/{order_sell_id})"
+            payload += f"\n{icon_sell} {sell_now_link}"
 
             fields.append(Field(
                 name=f"{order.ticker} - ({order.merchant_params.high_interval}/{order.merchant_params.low_interval})",

@@ -2,7 +2,7 @@ import logging
 import os
 
 import azure.functions as func
-from azure.data.tables import TableServiceClient, TableClient
+from azure.data.tables import TableServiceClient
 
 from broker_repository import BrokerRepository
 from merchant_signal import MerchantSignal
@@ -12,9 +12,7 @@ from merchant_reporting import MerchantReporting
 from server import *
 from signal_enhancements import apply_all
 from table_ledger import TableLedger, HashSigner
-from utils import time_utc_as_str, roll_dice_10percent as roll_dice
-
-import command_app
+from utils import null_or_empty, time_utc_as_str, roll_dice_10percent as roll_dice
 
 app = func.FunctionApp()
 
@@ -24,7 +22,15 @@ app = func.FunctionApp()
 def positions(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("positions() - invoked")
     try:
-        return handle_for_positions(req)
+        if is_health_check(req):
+            return rx_ok()
+    
+        security_type = req.params.get("securityType", "crypto")        
+        with connect_table_service() as table_service:        
+            return handle_for_positions(
+                        security_type=security_type, 
+                        table_service=table_service
+                    )
     except Exception as e:
         logging.error(f"error handling positions - {e}", exc_info=True)
         report_problem(msg=f"error handling positions", exc=e)
@@ -35,24 +41,47 @@ def positions(req: func.HttpRequest) -> func.HttpResponse:
             auth_level=func.AuthLevel.ANONYMOUS )
 def signals(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("signals() - invoked")
-    return handle_for_signals(req)
+    try:
+        if req.get_body() is None:
+            return rx_bad_request()
+        if null_or_empty(req.get_body().decode("utf-8")):
+            return rx_bad_request()
+        
+        headers = get_headers(req=req)
+        logging.info(f"request headers: {headers}")
+        message_body = get_json_body(req=req)
+        logging.info(f"received merchant signal: {message_body}")
+
+        return handle_for_signals(message_body=message_body)
+    except Exception as e:
+        logging.error(f"error handling signals - {e}, request body - {req.get_body().decode('utf-8')}", exc_info=True)
+        report_problem(msg=f"error handling signals", exc=e)
+    return rx_bad_request()
     
 @app.route(route="command/{instruction}/{identifier}",
            methods=["GET"],
            auth_level=func.AuthLevel.ANONYMOUS)
 def command(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("command() - invoked")
+    if "instruction" not in req.route_params:
+        return rx_bad_request()
+    if "identifier" not in req.route_params:
+        return rx_bad_request()
+    if "securityType" not in req.params:
+        return rx_bad_request()
+    
     instruction = req.route_params.get("instruction")
     identifier = req.route_params.get("identifier")
-    if instruction is None or identifier is None:
-        ### consider logging more info if this endpoint is getting attacked
-        logging.warning("command() - missing instruction or identifier")
+    security_type = req.params.get("securityType")
+
+    if null_or_empty(instruction) or null_or_empty(identifier) or null_or_empty(security_type):
+        logging.warning(f"command() - missing instruction({instruction}) or identifier({identifier}) or security type({security_type})")  
         return rx_bad_request()
     try:
         return handle_instruction_for_command(
-            req=req, 
             command=instruction, 
-            identifier=identifier
+            identifier=identifier,
+            security_type=security_type
         )
     except Exception as e:
         logging.error(f"error handling cmd - {e}", exc_info=True)
@@ -62,14 +91,13 @@ def command(req: func.HttpRequest) -> func.HttpResponse:
 def connect_table_service() -> TableServiceClient:
     return TableServiceClient.from_connection_string(os.environ["storageAccountConnectionString"])
 
-def handle_instruction_for_command(req: func.HttpRequest, command:str, identifier:str) -> func.HttpResponse:
+def handle_instruction_for_command(command:str, identifier:str, security_type:str) -> func.HttpResponse:
     if command == "sell":
-        security_type = req.params.get("securityType", "crypto")        
-        broker = BrokerRepository().get_for_security(security_type)
+        broker = BrokerRepository().get_for_security(security_type=security_type)
         with connect_table_service() as table_service:        
-            merchant = Merchant(table_service, broker)
+            merchant = Merchant(table_service=table_service, broker=broker)
             subscribe_events(merchant=merchant)
-            result = merchant.sell(identifier)
+            result = merchant.sell(identifier=identifier)
             if result is None:
                 return rx_not_found("Unable to sell - order not found or no longer exists")
             return rx_json({
@@ -80,60 +108,33 @@ def handle_instruction_for_command(req: func.HttpRequest, command:str, identifie
                 "result": "OK",
                 "timestamp": time_utc_as_str()
             })
+    logging.warning(f"unknown command {command}")
     return rx_bad_request()
 
-def handle_for_positions(req: func.HttpRequest) -> func.HttpResponse:
-    if is_health_check(req):
-        return rx_ok()
-    
-    security_type = req.params.get("securityType", "crypto")        
-    broker = BrokerRepository().get_for_security(security_type)
+def handle_for_positions(security_type:str, table_service:TableServiceClient) -> func.HttpResponse:
+    broker = BrokerRepository().get_for_security(security_type=security_type)
+    merchant = Merchant(table_service=table_service, broker=broker)
+    subscribe_events(merchant=merchant)
+    results = merchant.check_positions()
+    return rx_json(data=results.__dict__)
 
-    with connect_table_service() as table_service:        
-        merchant = Merchant(table_service, broker)
+def handle_for_signals(message_body:dict) -> func.HttpResponse:
+    signal = MerchantSignal.parse(msg_body=message_body)
+    
+    if not is_authorized(client_token=signal.api_token()):
+        return rx_unauthorized()
+    
+    broker = BrokerRepository().get_for_security(security_type=signal.security_type())
+
+    with connect_table_service() as table_service:    
+        merchant = Merchant(table_service=table_service, broker=broker)
         subscribe_events(merchant=merchant)
-        results = merchant.check_positions()
-        return rx_json(results.__dict__)
-    
-    return rx_not_found()
-
-def handle_for_signals(req: func.HttpRequest) -> func.HttpResponse:
-    headers = None
-    message_body = None
-    try:
-        headers = get_headers(req)
-        logging.info(f"Trading View headers: {headers}")
-        message_body = get_json_body(req)
-        logging.info(f"received merchant signal: {message_body}")
-
-        signal = MerchantSignal.parse(message_body)
-        
-        if not is_authorized(signal.api_token()):
-            return rx_unauthorized()
-        
-        broker = BrokerRepository().get_for_security(signal.security_type())
-    
-        with connect_table_service() as table_service:    
-            merchant = Merchant(table_service, broker)
-            subscribe_events(merchant=merchant)
-            signal = enhance_signal(signal)
-            merchant.handle_market_signal(signal)
-        return rx_ok()
-    
-    except Exception as e:
-        logging.error(f"error handling market signal - {e} - {message_body}", exc_info=True)
-        report_problem(
-            msg=f"error handling market signal", 
-            exc=e, 
-            additional_data={
-                "message_body": message_body,
-                "headers": headers
-            }
-        )
-    return rx_not_found()
+        signal = enhance_signal(signal=signal)
+        merchant.handle_market_signal(signal=signal)
+    return rx_ok()
 
 def enhance_signal(signal: MerchantSignal) -> MerchantSignal:
-    return apply_all(signal)
+    return apply_all(signal=signal)
 
 def subscribe_events(merchant: Merchant) -> None:
     merchant.on_order_placed += merchant_order_placed
@@ -151,21 +152,21 @@ def report_problem(msg:str, exc:Exception, additional_data:dict = {}) -> None:
 
 def merchant_state_changed(merchant_id: str, status: str, state: dict) -> None:
     try:
-        MerchantReporting().report_state_changed(merchant_id, status, state)
+        MerchantReporting().report_state_changed(merchant_id=merchant_id, status=status, state=state)
     except Exception as e:
         logging.error(f"error reporting state change - {e}", exc_info=True)
         report_problem(msg=f"error reporting state change", exc=e)
 
 def merchant_signal_received(merchant_id: str, signal: MerchantSignal) -> None:
     try:
-        MerchantReporting().report_signal_received(signal)
+        MerchantReporting().report_signal_received(signal=signal)
     except Exception as e:
         logging.error(f"error reporting signal received - {e}", exc_info=True)
         report_problem(msg=f"error reporting signal received", exc=e)
 
 def merchant_order_placed(merchant_id: str, order_data: Order) -> None:
     try:
-        MerchantReporting().report_order_placed(order_data)
+        MerchantReporting().report_order_placed(order=order_data)
     except Exception as e:
         logging.error(f"error reporting order placed - {e}", exc_info=True)
         report_problem(msg=f"error reporting order placed", exc=e)

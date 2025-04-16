@@ -140,7 +140,7 @@ class Merchant:
                             )
         sell_result_dict = standardize_market_order(market_order_result=sell_result_api)
         
-        logging.info(f"Sold order {order}, with result {sell_result_dict}")
+        logging.info(f"Sold order {order}, with result {sell_result_api}")
         additional_data.update({
             "_market_order_sell_result_broker_api": sell_result_api,
             "market_order_sell_result": sell_result_dict
@@ -154,16 +154,20 @@ class Merchant:
 
         order.results = Results(
                             transaction=sell_transaction,
-                            complete=True
+                            complete=True,
+                            additional_data=additional_data
                         )
-
-        sell_result = SellResult(
-                    order=order,
-                    transaction=sell_transaction,
-                    additional_data=additional_data
-                )
         
-        self._notify_of_sell(order=order.as_copy(), sell_result=sell_result)
+        sell_result = SellResult(
+                        order=order,
+                        transaction=sell_transaction,
+                        additional_data=additional_data
+                    )
+        
+        self._notify_of_sell(
+                order=order.as_copy(), 
+                sell_result=sell_result
+            )
         
         return sell_result
         
@@ -194,7 +198,7 @@ class Merchant:
         check_result.current_prices.update({
             order.ticker: sell_result.transaction.price
         })
-
+        
         pnl = pnl_dict.get("current_without_fees")
         if pnl > 0.0:
             check_result.winners = [ order.__dict__ ]

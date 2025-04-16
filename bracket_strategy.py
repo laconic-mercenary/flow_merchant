@@ -9,6 +9,7 @@ from merchant_keys import keys
 from transactions import calculate_stop_loss, calculate_take_profit, calculate_pnl, Transaction, TransactionAction
 from utils import unix_timestamp_ms, pause_thread
 
+import copy
 import logging
 import typing
 import uuid
@@ -58,11 +59,12 @@ class BracketStrategy(OrderStrategy):
         if keys.bkrdata.order.suborders.props.ID() not in market_order_info:
             raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.ID()} not found in market order data {market_order_info}")
 
-        if not dry_run_mode:
-            market_order_info = broker.get_order(
-                ticker=ticker, 
-                order_id=market_order_info.get(keys.bkrdata.order.suborders.props.ID())
-            )
+        ### TODO
+        #if not dry_run_mode:
+        #    market_order_info = broker.get_order(
+        #        ticker=ticker, 
+        #        order_id=market_order_info.get(keys.bkrdata.order.suborders.props.ID())
+        #    )
         
         if keys.bkrdata.order.suborders.props.ID() not in market_order_info:
             raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.ID()} not found in market order data {market_order_info}")
@@ -71,13 +73,7 @@ class BracketStrategy(OrderStrategy):
         if keys.bkrdata.order.suborders.props.CONTRACTS() not in market_order_info:
             raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.CONTRACTS()} not found in market order data {market_order_info}")
 
-        ## (see above)
-        ### TODO 
-        ### There is a bug in the MEXC API where the market order price is not correct
-        ### https://github.com/mexcdevelop/mexc-api-sdk/issues/77
-        ### temporarily use current price instead, this will incur a cost to our API usage
-        main_order_price = self._current_price(broker, ticker)
-        ## main_order_price = market_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
+        main_order_price = market_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
         main_order_contracts = market_order_info.get(keys.bkrdata.order.suborders.props.CONTRACTS())
 
         stop_loss_price = calculate_stop_loss(
@@ -173,7 +169,8 @@ class BracketStrategy(OrderStrategy):
         )
         new_order.results = Results(
             transaction=None,
-            complete=False
+            complete=False,
+            additional_data={}
         )
         return new_order
     
@@ -208,7 +205,8 @@ class BracketStrategy(OrderStrategy):
             results.transaction = sell_result
             order.results = Results(
                 transaction=sell_result,
-                complete=True
+                complete=True,
+                additional_data=copy.deepcopy(results.additional_data)
             )
         return results
 

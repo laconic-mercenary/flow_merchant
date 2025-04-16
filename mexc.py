@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from broker_exceptions import ApiError, OrderAlreadyFilledError, OversoldError, InvalidQuantityScale
 from live_capable import LiveCapable
 from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelable, DryRunnable
-from utils import unix_timestamp_ms, unix_timestamp_secs
+from utils import unix_timestamp_ms, unix_timestamp_secs, null_or_empty
 
 ### NOTES
 ### for a list of supported symbols: https://api.mexc.com/api/v3/defaultSymbols
@@ -59,6 +59,8 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
         )
     
     def standardize_market_order(self, market_order_result: dict) -> dict:
+        override_with_cur_price:bool = True
+
         if "clientOrderId" not in market_order_result:
             raise ValueError(f"expected key clientOrderId to be in {market_order_result}")
         if "orderId" not in market_order_result:
@@ -69,6 +71,20 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             raise ValueError(f"expected key origQty to be in {market_order_result}")
         if "price" not in market_order_result:
             raise ValueError(f"expected key price to be in {market_order_result}")
+        if override_with_cur_price:
+            ### TODO
+            ### ### There is a bug in the MEXC API where the market order price is not correct
+            ### This is true for BOTH SELLs and BUYs
+            ### https://github.com/mexcdevelop/mexc-api-sdk/issues/77
+            ### temporarily use current price instead, this will incur a cost to our API usage
+            if "__ticker" not in market_order_result:
+                raise ValueError(f"expected key __ticker to be in {market_order_result}")
+            original_price = market_order_result.get("price")
+            ticker = market_order_result.get("__ticker")
+            symbols = [ ticker ]
+            prices = self.get_current_prices(symbols=symbols)
+            market_order_result["price"] = prices.get(ticker)
+            logging.warning(f"Due to MEXC bug - https://github.com/mexcdevelop/mexc-api-sdk/issues/77 - overriding the ORDER price from {original_price} to {prices.get(ticker)} for {ticker}. In dry run mode, these values will be equal.")
         return {
             "id": market_order_result.get("clientOrderId"),
             "broker_order_id": market_order_result.get("orderId"),
@@ -197,8 +213,7 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             tracking_id=tracking_id, 
             dry_run=True
         )
-        if len(result.keys()) != 0:
-            raise ValueError(f"expected result to be empty, but got {result}")
+        logging.info(f"place_market_order_test result: {result}")
         """ NOTE - Although not very authentic, this is as close to a fill-price for a market order as we can get. """
         current_prices = self.get_current_prices(symbols=[ticker])
         if ticker not in current_prices:
@@ -210,7 +225,8 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             "orderId": dryrun_tracking_id,
             "transactTime": unix_timestamp_ms(),
             "origQty": float(contracts),
-            "price": float(current_prices.get(ticker))
+            "price": float(current_prices.get(ticker)),
+            "__ticker": ticker
         }
 
     def place_limit_order_test(self, ticker:str, action:str, contracts:float, limit:float, broker_params:dict = {}, tracking_id:str = None) -> dict:
@@ -221,8 +237,6 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             limit=limit, 
             dry_run=True
         )
-        if len(results.keys()) != 0:
-            raise ValueError(f"Expected no results for dry run, but got {results}")
         current_prices = self.get_current_prices(symbols=[ticker])
         if ticker not in current_prices:
             raise ValueError(f"expected key {ticker} to be in {current_prices}")
@@ -246,11 +260,11 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
         #     msg = "MEXC API is not available"
         #     logging.error(msg)
         #     raise ValueError(msg)
-        if ticker is None or len(ticker) == 0:
-            msg = "Invalid ticker"
+        if null_or_empty(ticker):
+            msg = "ticker is required"
             logging.error(msg)
             raise ValueError(msg)
-        if contracts <= 0:
+        if contracts <= 0.0:
             msg = f"Invalid contracts: {contracts}"
             logging.error(msg)
             raise ValueError(msg)
@@ -265,22 +279,24 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             contracts=contracts, 
             tracking_id=market_order_id
         )
-        return self._api_place_order(params=market_order_params,dry_run=dry_run)
+        results = self._api_place_order(params=market_order_params,dry_run=dry_run)
+        results.update({"__ticker": ticker})
+        return results
     
     def _place_limit_order(self, ticker: str, action: str, contracts: float, limit: float, broker_params: dict = {}, dry_run:bool = False) -> dict:
         # if not self._api_ping():
         #     msg = "MEXC API is not available"
         #     logging.error(msg)
         #     raise ValueError(msg)
-        if ticker is None or len(ticker) == 0:
-            msg = "Invalid ticker"
+        if null_or_empty(ticker):
+            msg = "ticker is required"
             logging.error(msg)
             raise ValueError(msg)
-        if contracts <= 0:
+        if contracts <= 0.0:
             msg = f"Invalid contracts: {contracts}"
             logging.error(msg)
             raise ValueError(msg)
-        if limit <= 0:
+        if limit <= 0.0:
             msg = f"Invalid limit: {limit}"
             logging.error(msg)
             raise ValueError(msg)
@@ -344,7 +360,7 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
     
     def _api_get_current_prices(self, ticker: str = None) -> dict:
         url = f"{self._cfg_api_endpoint()}/api/v3/ticker/price"
-        if ticker is not None:
+        if not null_or_empty(ticker):
             params = {
                 "symbol": ticker,
             }
@@ -418,8 +434,8 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
         return response.json()
     
     def _api_get_open_orders(self, symbol: str) -> dict:
-        if symbol is None or symbol == "":
-            raise ValueError("Symbol is required")
+        if null_or_empty(symbol):
+            raise ValueError("symbol parameter is required")
         base_url = self._cfg_api_endpoint()
         endpoint = "/api/v3/openOrders"
         remote_server_time = self._timestamp()
@@ -439,8 +455,8 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
         return response.json()
 
     def _api_get_orders(self, symbol: str) -> dict:
-        if symbol is None:
-            raise ValueError("Symbol cannot be None")
+        if null_or_empty(symbol):
+            raise ValueError("symbol parameter is required")
         base_url = self._cfg_api_endpoint()
         endpoint = "/api/v3/allOrders"
         remote_server_time = self._timestamp()
@@ -463,9 +479,9 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
         return response.json()
 
     def _api_cancel_order(self, ticker: str, order_id: str, dry_run:bool = False) -> dict:
-        if ticker is None or len(ticker) == 0:
+        if null_or_empty(ticker):
             raise ValueError("ticker is required")
-        if order_id is None or len(order_id) == 0:
+        if null_or_empty(order_id):
             raise ValueError("order_id is required")
         if dry_run:
             logging.info(f"Dry run: cancel order {order_id} for {ticker}")
