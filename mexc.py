@@ -9,7 +9,7 @@ import requests
 from urllib.parse import urlencode
 
 from broker_exceptions import ApiError, OrderAlreadyFilledError, OversoldError, InvalidQuantityScale
-from live_capable import LiveCapable
+from live_capable import LiveCapable, AssetInfoResult
 from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelable, DryRunnable
 from utils import unix_timestamp_ms, unix_timestamp_secs, null_or_empty
 
@@ -203,8 +203,42 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             if ticker in symbols:
                 result[ticker] = float(price["price"])
         result.update({ "_timechecked": unix_timestamp_ms() })
-        return result 
+        return result
     
+    def get_asset_info(self, symbols:list[str]) -> AssetInfoResult:
+        if len(symbols) != 1:
+            raise ValueError(f"MEXC currently supports 1 symbol, got {len(symbols)}")
+        base_url = self._cfg_api_endpoint()
+        endpoint = "/api/v3/exchangeInfo"
+        remote_server_time = self._timestamp()
+        params = {
+            "symbols": ",".join(symbols),
+            "timestamp": remote_server_time,
+            "recvWindow": self._cfg_recv_window_ms()
+        }
+        params["signature"] = self._sign(params)
+        headers = self._request_headers()
+        response = requests.get(f"{base_url}{endpoint}", headers=headers, params=params)
+        logging.info(f"MEXC API asset info response: {response.status_code} - {response.text}")
+        
+        if response.status_code != 200:
+            msg = f"Failed to get asset info: {response.status_code} - {response.text}"
+            logging.error(msg)
+            raise ApiError(msg)
+        
+        api_rx = response.json()
+        if not isinstance(api_rx, dict):
+            raise TypeError(f"Expected dict, got {type(api_rx)}")
+        symbols = api_rx.get("symbols")
+
+        ### TODO - this can easily support multiple symbols (securities / tickers, whatever you want to call it) but 
+        ### keeping it simple for now, feel free to remove this restriction
+        if len(symbols) != 1:
+            raise ValueError(f"Expected 1 symbol, got {len(symbols)}")
+        if "baseSizePrecision" not in symbols[0]:
+            raise KeyError(f"Expected key 'baseSizePrecision' not found in {api_rx}")
+        return AssetInfoResult(base_scale=float(symbols[0].get("baseSizePrecision")))
+            
     def place_market_order_test(self, ticker: str, action: str, contracts: float, broker_params: dict = {}, tracking_id:str=None) -> dict:
         result = self._place_market_order(
             ticker=ticker, 

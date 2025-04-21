@@ -86,6 +86,11 @@ def safety_check(close_price: float, take_profit_price: float, stop_loss_price: 
     if quantity <= 0.0:
         raise ValueError(f"Quantity {quantity} is less than or eq 0")
     
+## 
+
+
+## Transaction
+    
 class TransactionAction(str, enum.Enum):
     BUY = "BUY"
     SELL = "SELL"

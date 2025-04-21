@@ -9,13 +9,13 @@ class MerchantSignal:
     def __init__(self, msg_body):
         if not msg_body:
             raise ValueError("Message body cannot be null")
-        self.msg = msg_body
-        self.metadata = msg_body.get("metadata", {})
-        self.security = msg_body.get("security", {})
-        self.flowmerchant = msg_body.get("flowmerchant", {})
-        self._notes = msg_body.get("notes", "")
-        self.TABLE_NAME = "flowmerchant"
-        self.__id = str(uuid.uuid4())
+        self.msg:dict = msg_body
+        self.metadata:dict = msg_body.get("metadata", {})
+        self.security:dict = msg_body.get("security", {})
+        self.flowmerchant:dict = msg_body.get("flowmerchant", {})
+        self._notes:str = msg_body.get("notes", "")
+        self.TABLE_NAME:str = "flowmerchant"
+        self.__id:str = str(uuid.uuid4())
 
     @staticmethod
     def parse(msg_body:dict):

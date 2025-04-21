@@ -17,6 +17,7 @@ from order_capable import Broker, MarketOrderable, StopMarketOrderable, OrderCan
 from order_strategy import OrderStrategy
 from order_strategies import OrderStrategies, strategy_enum_from_str
 from security import order_digest
+from signal_enhancements import apply_all
 from transactions import calculate_pnl, Transaction, TransactionAction
 from utils import unix_timestamp_secs, unix_timestamp_ms, roll_dice_10percent, null_or_empty, consts as util_consts
 
@@ -461,6 +462,7 @@ class Merchant:
         if not self._is_allowed_signal(signal):
             logging.warning(f"signal not allowed - id={signal.id()}. Allowed signals are {cfg.SIGNAL_ALLOW_LIST()}")
             return
+        signal = apply_all(signal=signal, params=self._get_enhancement_params())
         self.merchant_id(signal)
         self.on_signal_received.emit(self.merchant_id(), signal)
         try:
@@ -672,6 +674,12 @@ class Merchant:
         )
 
     ## common
+
+    def _get_enhancement_params(self) -> dict:
+        return {
+            "broker": self.broker,
+            "database": self.table_service
+        }
 
     def _strategy_from_enum(self, strategy_enum:OrderStrategies) -> OrderStrategy:
         if not isinstance(strategy_enum, OrderStrategies):

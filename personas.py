@@ -27,7 +27,14 @@ def database() -> Database:
                portrait_url="https://i.imgur.com/dMbTucn.jpeg",
                quote="You are a winner!",
                advice="Keep up the good work!"
-           ) 
+           ),
+           Persona(
+               name="Obi-wan",
+               avatar_url="https://i.imgur.com/76OLpT6.gif",
+               portrait_url="https://i.imgur.com/76OLpT6.gif",
+               quote="Another happy landing",
+               advice="So uncivilized!"
+           )
         ],
         leaders=[
             Persona(
@@ -45,6 +52,13 @@ def database() -> Database:
                 portrait_url="https://i.imgur.com/dPtU0TQ.jpeg",
                 quote="Target acquired.",
                 advice="Get rid of these - or I will."
+            ),
+            Persona(
+                name="Yor",
+                avatar_url="https://i.imgur.com/EV9iNwo.jpeg",
+                portrait_url="https://i.imgur.com/EV9iNwo.jpeg",
+                quote="May I borrow some of your time?.",
+                advice="Sell these, or I'll get closer..."
             )
         ],
         losers=[

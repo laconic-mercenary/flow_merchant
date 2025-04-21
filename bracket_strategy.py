@@ -7,7 +7,7 @@ from merchant_order import Order, MerchantParams, SubOrder, SubOrders, Metadata,
 from merchant_signal import MerchantSignal
 from merchant_keys import keys
 from transactions import calculate_stop_loss, calculate_take_profit, calculate_pnl, Transaction, TransactionAction
-from utils import unix_timestamp_ms, pause_thread
+from utils import unix_timestamp_ms, pause_thread, null_or_empty
 
 import copy
 import logging
@@ -30,6 +30,15 @@ class BracketStrategy(OrderStrategy):
         take_profit_percent = signal.takeprofit_percent()
         stop_loss_percent = signal.suggested_stoploss()
         dry_run_mode = merchant_params.get("dry_run", False)
+
+        if null_or_empty(ticker):
+            raise ValueError("Ticker is required")
+        if contracts <= 0.0:
+            raise ValueError("Contracts must be greater than 0")
+        if take_profit_percent <= 0.0:
+            raise ValueError("Take profit percent must be greater than 0")
+        if stop_loss_percent <= 0.0:
+            raise ValueError("Stop loss percent must be greater than 0")
 
         if dry_run_mode:
             if not isinstance(broker, DryRunnable):

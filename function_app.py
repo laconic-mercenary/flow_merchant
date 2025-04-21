@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 
@@ -10,11 +11,14 @@ from merchant_order import Order
 from merchant import Merchant, PositionsCheckResult
 from merchant_reporting import MerchantReporting
 from server import *
-from signal_enhancements import apply_all
 from table_ledger import TableLedger, HashSigner
 from utils import null_or_empty, time_utc_as_str, roll_dice_10percent as roll_dice
 
 app = func.FunctionApp()
+
+###
+# /positions
+###
 
 @app.route(route="positions",
            methods=["GET"],
@@ -36,6 +40,10 @@ def positions(req: func.HttpRequest) -> func.HttpResponse:
         report_problem(msg=f"error handling positions", exc=e)
     return rx_not_found()
     
+###
+# /signals
+###
+
 @app.route( route="signals", 
             methods=["POST"],
             auth_level=func.AuthLevel.ANONYMOUS )
@@ -53,10 +61,18 @@ def signals(req: func.HttpRequest) -> func.HttpResponse:
         logging.info(f"received merchant signal: {message_body}")
 
         return handle_for_signals(message_body=message_body)
+    except json.decoder.JSONDecodeError as jde:
+        body = req.get_body().decode("utf-8")
+        logging.error(f"error handling signals - {jde}, request body - {body}", exc_info=True)
+        report_problem(msg=f"Invalid JSON received - double check your signal", exc=jde, additional_data={"request_body": body})
     except Exception as e:
         logging.error(f"error handling signals - {e}, request body - {req.get_body().decode('utf-8')}", exc_info=True)
         report_problem(msg=f"error handling signals", exc=e)
     return rx_bad_request()
+
+###
+# /command/{instruction}/{identifier}
+###
     
 @app.route(route="command/{instruction}/{identifier}",
            methods=["GET"],
@@ -87,6 +103,10 @@ def command(req: func.HttpRequest) -> func.HttpResponse:
         logging.error(f"error handling cmd - {e}", exc_info=True)
         report_problem(msg=f"error handling cmd", exc=e)
     return rx_bad_request()
+
+###
+# support
+###
 
 def connect_table_service() -> TableServiceClient:
     return TableServiceClient.from_connection_string(os.environ["storageAccountConnectionString"])
@@ -129,12 +149,8 @@ def handle_for_signals(message_body:dict) -> func.HttpResponse:
     with connect_table_service() as table_service:    
         merchant = Merchant(table_service=table_service, broker=broker)
         subscribe_events(merchant=merchant)
-        signal = enhance_signal(signal=signal)
         merchant.handle_market_signal(signal=signal)
     return rx_ok()
-
-def enhance_signal(signal: MerchantSignal) -> MerchantSignal:
-    return apply_all(signal=signal)
 
 def subscribe_events(merchant: Merchant) -> None:
     merchant.on_order_placed += merchant_order_placed

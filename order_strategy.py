@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from order_capable import Broker
 from merchant_order import Order
 from merchant_signal import MerchantSignal
-from transactions import Transaction, TransactionAction
+from transactions import Transaction
 
 class HandleResult:
     def __init__(self, target_order:Order, additional_data:dict = {}, complete:bool = False, transaction:Transaction = None):
