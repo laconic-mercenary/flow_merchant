@@ -166,8 +166,8 @@ class TableLedger(Ledger):
         to_timestamp = abs(to_timestamp)
         if from_timestamp > to_timestamp:
             raise ValueError("from_timestamp must be less than to_timestamp")
-        query_include_tests = f"test eq true" if include_tests else f"test eq false"
-        query_filter = f"timestamp ge {from_timestamp} and timestamp le {to_timestamp} and {query_include_tests}"
+        query_include_tests = "" if include_tests else f"and test eq false"
+        query_filter = f"timestamp ge {from_timestamp} and timestamp le {to_timestamp} {query_include_tests}"
         if not null_or_empty(name):
             if not name.isalnum():
                 raise ValueError("name must be alphanumeric")
