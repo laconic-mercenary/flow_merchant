@@ -9,7 +9,7 @@ from persona import Persona
 from personas import database, main_author, next_laggard_persona, next_leader_persona, next_loser_persona, next_winner_persona
 from security import order_digest
 from transactions import multiply, calculate_percent_diff, calculate_pnl
-from utils import unix_timestamp_secs, time_from_timestamp, time_utc_as_str, roll_dice_33percent, consts as utils_consts
+from utils import unix_timestamp_secs, time_from_timestamp, time_utc_as_str, roll_dice_33percent, null_or_empty, consts as utils_consts
 
 import logging
 import io
@@ -37,10 +37,16 @@ class cfg:
         enabled = os.environ.get("MERCHANT_REPORTING_LEDGER_PERFORMANCE", "true")
         return enabled.lower() == "true"
 
+    def REPORTING_IGNORE_DRY_RUN() -> bool:
+        enabled = os.environ.get("MERCHANT_REPORTING_IGNORE_DRY_RUN", "false")
+        return enabled.lower() == "true"
+
 
 class MerchantReporting:
 
     def report_problem(self, msg:str, exc:Exception = None) -> None:
+        if null_or_empty(msg):
+            raise ValueError("msg cannot be empty")
         author = main_author(db=database())
         fields=[]
         if exc is not None:
@@ -86,6 +92,14 @@ class MerchantReporting:
         if not cfg.REPORTING_STATE_CHANGED():
             logging.warning("merchant state changed reporting (buying, selling, shopping etc) is disabled")
             return
+        if null_or_empty(merchant_id):
+            raise ValueError("merchant_id cannot be empty")
+        if null_or_empty(status):
+            raise ValueError("status cannot be empty")
+        if state is None:
+            raise ValueError("state cannot be None")
+        if not isinstance(state, dict):
+            raise TypeError("state must be a dict")
         reportable_states = ["buying", "resting"] ## don't report states for now to avoid rate limiting on discord
         status_lower = status.lower()
         if status_lower not in reportable_states:
@@ -106,6 +120,10 @@ class MerchantReporting:
         if not cfg.REPORTING_NEW_ORDERS():
             logging.warning("reporting for new order placements is currently disabled")
             return
+        if order is None:
+            raise ValueError("order cannot be None")
+        if not isinstance(order, Order):
+            raise TypeError("order must be an instance of Order")
         ticker = order.ticker
         order_dry_run = order.metadata.is_dry_run
         main_order = order.sub_orders.main_order
@@ -195,6 +213,8 @@ class MerchantReporting:
         if results is None:
             logging.warning(f"merchant_positions_checked() - no results")
             return
+        if not isinstance(results, PositionsCheckResult):
+            raise TypeError(f"results must be an instance of PositionsCheckResult, not {type(results)}")
         if results.current_prices is None:
             logging.warning(f"merchant_positions_checked() - no current price - {results.__dict__}")
             return
@@ -220,6 +240,14 @@ class MerchantReporting:
         if not cfg.REPORTING_LEDGER_PERFORMANCE():
             logging.warning("reporting ledger performance is disabled")
             return
+        if ledger is None:
+            raise ValueError("ledger cannot be None")
+        if signer is None:
+            raise ValueError("signer cannot be None")
+        if not isinstance(ledger, Ledger):
+            raise TypeError("ledger must be an instance of Ledger")
+        if not isinstance(signer, Signer):
+            raise TypeError("signer must be an instance of Signer")
         if roll_dice_33percent():
             deleted_logs = ledger.purge_old_logs()
             if len(deleted_logs) != 0:
@@ -240,8 +268,8 @@ class MerchantReporting:
             #     "timeframe": now - utils_consts.ONE_MONTH_IN_SECS()
             # },
             {
-                "title": "24 Hours",
-                "timeframe": now - utils_consts.ONE_DAY_IN_SECS()
+                "title": "12 Hours",
+                "timeframe": now - utils_consts.ONE_HOUR_IN_SECS(hours=12)
             } 
         ]
         embeds = []
@@ -450,6 +478,7 @@ class MerchantReporting:
         icon_take_profit = "\U0001F3C6"
         icon_entry = "\U0001F4B5"
         icon_sell = "\U0001F58A"
+        icon_real_order = "\U0001F4B0"
 
         def _current_profit(order:Order, current_price:float) -> float:
             main_price = order.sub_orders.main_order.price
@@ -468,6 +497,7 @@ class MerchantReporting:
         for position in positions[:max_iters]:
             order = Order.from_dict(position)
             current_price = prices.get(order.ticker)
+            dry_run_order = order.metadata.is_dry_run
             
             potential_profit = order.projections.profit_without_fees
             potential_loss = order.projections.loss_without_fees
@@ -508,6 +538,8 @@ class MerchantReporting:
             ### TODO - hardcoded url and also securityType
             sell_now_link = f"[~SELL NOW~](https://stockton-jpe01-flow-merchant.azurewebsites.net/api/command/sell/{order_sell_id}?securityType=crypto)"
 
+            real_world_order_icon = f"{icon_real_order}" if not dry_run_order else ""
+
             payload = f"PRICE @ {current_price} ({sell_now_per_diff}%) - {sell_now_msg}"
             payload += f"\n{icon_timestamp} _*{order_friendly_timestamp}*_ UTC"
             payload += f"\n{icon_entry} @ {main_price} x {main_contracts} = {main_total}"
@@ -516,7 +548,7 @@ class MerchantReporting:
             payload += f"\n{icon_sell} {sell_now_link}"
 
             fields.append(Field(
-                name=f"{order.ticker} - ({order.merchant_params.high_interval}/{order.merchant_params.low_interval})",
+                name=f"{order.ticker} - ({order.merchant_params.high_interval}/{order.merchant_params.low_interval}) {real_world_order_icon}",
                 value=payload
             ))
 
@@ -538,6 +570,12 @@ class MerchantReporting:
     
     def _send_check_result(self, winners:list, losers:list, leaders:list, laggards:list, current_prices:dict, elapsed_time_ms:int):
         embeds = []
+
+        winners = self._apply_filters(orders=winners)
+        losers = self._apply_filters(orders=losers)
+        leaders = self._apply_filters(orders=leaders)
+        laggards = self._apply_filters(orders=laggards)
+
         winners_ct = len(winners)
         losers_ct = len(losers)
         leaders_ct = len(leaders)
@@ -634,6 +672,14 @@ class MerchantReporting:
         )
         logging.info(f"Sending Discord payload: {msg}")
         DiscordClient().send_webhook_message(msg=msg)
+
+    def _apply_filters(self, orders:list[dict]) -> list[dict]:
+        if cfg.REPORTING_IGNORE_DRY_RUN():
+            orders = self._remove_dry_run_orders(orders)
+        return orders
+
+    def _remove_dry_run_orders(self, orders:list[dict]) -> list[dict]:
+        return [order for order in orders if not Order.from_dict(order).metadata.is_dry_run]
 
     def _traceback_as_str(self, ex:Exception) -> str:
         out = io.StringIO()

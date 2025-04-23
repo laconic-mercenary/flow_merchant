@@ -2,7 +2,7 @@
 from broker_exceptions import OversoldError, InvalidQuantityScale, ApiError
 from order_strategy import OrderStrategy, HandleResult
 from order_capable import Broker, MarketOrderable, OrderCancelable, DryRunnable, StopMarketOrderable
-from live_capable import LiveCapable
+from live_capable import LiveCapable, BalancesResult, AssetBalance
 from merchant_order import Order, MerchantParams, SubOrder, SubOrders, Metadata, Projections, Results
 from merchant_signal import MerchantSignal
 from merchant_keys import keys
@@ -25,6 +25,12 @@ class BracketStrategy(OrderStrategy):
         return results.get(ticker)
 
     def place_orders(self, broker:Broker, signal: MerchantSignal, merchant_state:dict, merchant_params:dict = {}) -> Order:
+        if broker is None:
+            raise ValueError("broker is required")
+        if signal is None:
+            raise ValueError("signal is required")
+        if not isinstance(signal, MerchantSignal):
+            raise TypeError(f"signal must be an instance of MerchantSignal, not {type(signal)}")
         ticker = signal.ticker()
         contracts = signal.contracts()
         take_profit_percent = signal.takeprofit_percent()
@@ -184,9 +190,16 @@ class BracketStrategy(OrderStrategy):
         return new_order
     
     def handle_take_profit(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
+        if broker is None:
+            raise ValueError("broker is required")
         if not isinstance(broker, MarketOrderable):
             raise ValueError(f"Broker is not market orderable - broker {type(broker)} - {broker.get_name()} supports the following interfaces: {broker.__class__.__subclasses__()}")
-        
+        if order is None:
+            raise ValueError("order is required")
+        if not isinstance(order, Order):
+            raise TypeError(f"order must be an instance of Order, not {type(order)}")
+        if merchant_params is None:
+            merchant_params = {}
         dry_run_mode = order.metadata.is_dry_run
         if dry_run_mode:
             if not isinstance(broker, DryRunnable):
@@ -204,7 +217,7 @@ class BracketStrategy(OrderStrategy):
                 results.additional_data.update({ "cancel_result": cancel_result })
 
         if not merchant_params.get("_skip_market_sell", False):
-            sell_result = self._execute_market_sell(
+            sell_result = self.execute_market_sell(
                                 ticker=order.ticker,
                                 contracts=order.sub_orders.main_order.contracts,
                                 broker=broker,
@@ -220,6 +233,16 @@ class BracketStrategy(OrderStrategy):
         return results
 
     def handle_stop_loss(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
+        if broker is None:
+            raise ValueError("broker is required")
+        if not isinstance(broker, Broker):
+            raise TypeError(f"broker must be an instance of Broker, not {type(broker)}")
+        if order is None:
+            raise ValueError("order is required")
+        if not isinstance(order, Order):
+            raise TypeError(f"order must be an instance of Order, not {type(order)}")
+        if merchant_params is None:
+            merchant_params = {}
         merchant_params.update({"_skip_cancel": True})
         if isinstance(broker, StopMarketOrderable):
             ### No need to market order SELL because the stop-loss would handle it
@@ -228,9 +251,13 @@ class BracketStrategy(OrderStrategy):
         results.complete = True
         return results
     
-    def _execute_market_sell(self, ticker:str, contracts:float, broker:Broker, dry_run_mode:bool) -> Transaction:
+    def execute_market_sell(self, ticker:str, contracts:float, broker:Broker, dry_run_mode:bool) -> Transaction:
         if not isinstance(broker, MarketOrderable):
             raise TypeError(f"Broker {broker} does not support market orders")
+        if not isinstance(contracts, float):
+            raise TypeError(f"Contracts must be a float, got {type(contracts)}")
+        if not isinstance(ticker, str):
+            raise TypeError(f"Ticker must be a string, got {type(ticker)}")
         execute_market_order = broker.place_market_order
         standardize_market_order = broker.standardize_market_order
         if dry_run_mode:
@@ -239,21 +266,51 @@ class BracketStrategy(OrderStrategy):
             execute_market_order = broker.place_market_order_test
         attempts = 4
         pause = 1.0
-        results = self._execute_market_sell_with_backoff(
-                    ticker=ticker,
-                    contracts=contracts, 
-                    execute_fn=execute_market_order,
-                    standardize_fn=standardize_market_order,
-                    attempts=attempts,
-                    pause_in_secs=pause
-                )
+        results = {}
+        try:
+            results = self._execute_market_sell_with_backoff(
+                        ticker=ticker,
+                        contracts=contracts, 
+                        execute_fn=execute_market_order,
+                        standardize_fn=standardize_market_order,
+                        attempts=attempts,
+                        pause_in_secs=pause
+                    )
+        except OversoldError as oe:
+            logging.warning(f"OversoldError for {ticker} - will reattempt with actual quantity")
+            contracts = self._get_quantity_for_ticker(ticker=ticker, broker=broker)
+            logging.warning(f"After oversold error, retrying for actual quantity: {contracts}, for ticker {ticker}")
+            results = self._execute_market_sell_with_backoff(
+                        ticker=ticker,
+                        contracts=contracts, 
+                        execute_fn=execute_market_order,
+                        standardize_fn=standardize_market_order,
+                        attempts=attempts,
+                        pause_in_secs=pause
+                    )
         if "price" not in results:
             raise ValueError(f"No price found in results: {results}")
+        if "contracts" not in results:
+            raise ValueError(f"No contracts found in results: {results}")
         return Transaction(
                 action=TransactionAction.SELL, 
                 quantity=results.get("contracts"), 
                 price=results.get("price")
             )
+    
+    def _get_quantity_for_ticker(self, ticker:str, broker:Broker) -> float:
+        if not isinstance(broker, LiveCapable):
+            raise TypeError(f"Broker {broker} does not support live trading")
+        result:BalancesResult = broker.get_balances()
+        balances:dict[str, AssetBalance] = result.balances
+        remaining_quantity = None
+        for asset_name in balances.keys():
+            if ticker.startswith(asset_name):
+                remaining_quantity = balances.get(asset_name).available
+                break
+        if remaining_quantity is None:
+            raise ValueError(f"Expected  ticker {ticker} to be in balances: {balances}")
+        return remaining_quantity
     
     def _execute_market_sell_with_backoff(self, ticker:str, contracts:float, execute_fn:typing.Callable, standardize_fn:typing.Callable, attempts:int = 4, pause_in_secs:float = 1.0, tracking_id:str = None) -> dict:
         backoff_count = attempts

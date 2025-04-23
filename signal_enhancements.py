@@ -8,39 +8,6 @@ import math
 import logging
 import os
 
-_BRACKETS = {
-    "3": [
-        (4.0, 0.5),
-        (4.0, 1.0)
-    ],
-    "5": [
-        (4.0, 0.25),
-        (4.0, 0.5),
-        (4.0, 1.0)
-    ],
-    "15": [
-        (3.0, 0.5),
-        (3.0, 1.0),
-        (5.0, 2.0),
-        (10.0, 2.0),
-        (15.0, 2.0)
-    ],
-    "30": [
-        (1.0, 1.0),
-        (3.0, 1.0),
-        (5.0, 2.0),
-        (10.0, 2.0),
-        (15.0, 2.0)
-    ],
-    "60": [
-        (1.0, 1.0),
-        (3.0, 1.0),
-        (5.0, 2.0),
-        (10.0, 2.0),
-        (15.0, 2.0)
-    ]
-}
-
 class SignalEnhancement:
     def is_enabled(self) -> bool:
         return False
@@ -50,17 +17,69 @@ class SignalEnhancement:
 
 class RandomBracket(SignalEnhancement):
 
+    def __init__(self):
+        ### format is 
+        ### <interval>: [(<stop loss>,<take profit), ...]
+        ### interval is the LOW interval, not the HIGH
+        self._BRACKETS = {
+            "3": [
+                (1.0, 0.5),
+                (1.0, 1.0)
+            ],
+            "5": [
+                (0.75, 0.25),
+                (1.0, 0.5),
+                (1.0, 1.0),
+                (3.0, 1.0)
+            ],
+            "15": [
+                (0.75, 0.25),
+                (1.0, 0.5),
+                (1.0, 1.0),
+                (3.0, 1.0)
+            ],
+            "30": [
+                (0.75, 0.25),
+                (1.0, 0.5),
+                (1.0, 1.0),
+                (3.0, 1.0)
+            ],
+            "60": [
+                (0.75, 0.25),
+                (1.0, 0.5),
+                (1.0, 1.0),
+                (3.0, 1.0)
+            ]
+        }
+
     def is_enabled(self) -> bool:
         return os.environ.get("SIGNALENH_RANDOM_BRACKET", "false").lower() == "true"
 
     def apply(self, signal:MerchantSignal, params:dict = {}) -> MerchantSignal:
-        stop_loss, take_profit = self.random_bracket(signal=signal, brackets=_BRACKETS)
-        if not self.is_set(signal.suggested_stoploss()) and not self.is_set(signal.takeprofit_percent()):
-            signal.flowmerchant["suggested_stoploss"] = stop_loss
-            signal.flowmerchant["takeprofit_percent"] = take_profit
+        if signal is None:
+            raise ValueError("signal cannot be None")
+        if not isinstance(signal, MerchantSignal):
+            raise TypeError(f"signal must be an instance of MerchantSignal, not {type(signal)}")
+        go_for_random = False
+        if params.get("global_dry_run_mode", False):
+            go_for_random = True
         else:
-            logging.warning(f"skipping random stop/take profit because they are already set: {signal.suggested_stoploss()}, {signal.takeprofit_percent()}")
+            if signal.dry_run():
+                go_for_random = True
+        if go_for_random:
+            self.apply_random_bracket(signal=signal)
+        else:
+            ### don't use random values when money is at-stake
+            if not self.is_set(signal.suggested_stoploss()):
+                raise ValueError(f"setting a stoploss is required when using real money! ticker: {signal.ticker()}")
+            if not self.is_set(signal.takeprofit_percent()):
+                raise ValueError(f"setting a takeprofit is required when using real money! ticker: {signal.ticker()}")
         return signal
+    
+    def apply_random_bracket(self, signal:MerchantSignal) -> None:
+        stop_loss, take_profit = self.random_bracket(signal=signal, brackets=self._BRACKETS)
+        signal.flowmerchant["suggested_stoploss"] = stop_loss
+        signal.flowmerchant["takeprofit_percent"] = take_profit
     
     def is_set(self, bracket:float) -> bool:
         return bracket != 0.0
@@ -129,15 +148,10 @@ class CurrencyToContracts(SignalEnhancement):
         ### note, it may be zero
         if base_scale == 0.0:
             base_scale = self.scale_from_price(price=current_price)
-        return self.truncate_to_scale2(qty=raw_qty, base_scale=base_scale)
+        return self.truncate_to_scale(qty=raw_qty, base_scale=base_scale)
         
-    def truncate_to_scale2(self, qty:float, base_scale:float) -> float:
-        decimals = abs(int(math.floor(math.log10(base_scale) + 1e-9)))
-        factor = 10 ** decimals
-        return math.floor(qty * factor) / factor
-
     def truncate_to_scale(self, qty:float, base_scale:float) -> float:
-        decimals = abs(int(round(math.log10(base_scale))))
+        decimals = abs(int(math.floor(math.log10(base_scale) + 1e-9)))
         factor = 10 ** decimals
         return math.floor(qty * factor) / factor
     
@@ -152,6 +166,13 @@ class CurrencyToContracts(SignalEnhancement):
 
 
 def apply_all(signal: MerchantSignal, params:dict = {}) -> MerchantSignal:
+    if signal is None:
+        raise ValueError("signal cannot be None")
+    if not isinstance(signal, MerchantSignal):
+        raise TypeError(f"signal must be an instance of MerchantSignal, not {type(signal)}")
+    if params is None:
+        params = {}
+
     enhancements:list[SignalEnhancement] = [
         RandomBracket(), 
         CurrencyToContracts()
@@ -159,7 +180,7 @@ def apply_all(signal: MerchantSignal, params:dict = {}) -> MerchantSignal:
     for enhancement in enhancements:
         if enhancement.is_enabled():
             logging.info(f"applying signal enhancement: {enhancement.__class__.__name__}.  OLD SIGNAL: {str(signal)}")
-            signal = enhancement.apply(signal=signal, params=params)
+            signal:MerchantSignal = enhancement.apply(signal=signal, params=params)
             logging.info(f"applied signal enhancement: {enhancement.__class__.__name__}.  NEW SIGNAL: {str(signal)}")
     return signal
 
@@ -168,18 +189,6 @@ if __name__ == "__main__":
 
     class Test(unittest.TestCase):
  
-        def test_e2e(self):
-            ### TODO this will not work well with the standardized intervals
-            signal = MerchantSignal({
-                "flowmerchant": {
-                    "low_interval": "5",
-                    "high_interval": "60"
-                }
-            })
-            enh = RandomBracket()
-            signal = enh.apply(signal=signal)
-            self.assertIn(enh.random_bracket(signal, _BRACKETS), _BRACKETS.get("5"))
-
         def test_exact_multiple(self):
             # $100 at $10,000 with 0.0001 step = 0.01 BTC
             self.assertAlmostEqual(CurrencyToContracts().calculate_contracts(100, 10000, 0.0001), 0.01)

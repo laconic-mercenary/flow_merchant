@@ -106,13 +106,47 @@ class Merchant:
                 order_sell_id = order_digest(order)
                 if order_sell_id == identifier:
                     logging.info(f"Selling {order}")
-                    results = self._broker_sell_order(order=order)
+                    results = self._sell_order(order=order)
                     self._remove_order_from_storage(position=position, removal_order=order)
                     return results
         logging.warning(f"Unable to find order with identifier {identifier}")
         return None
+    
+    def _sell_order(self, order: Order) -> SellResult:
+        strategy = self._strategy_from_order(order=order)
+        if not isinstance(strategy, BracketStrategy):
+            raise ValueError("Strategy must be BracketStrategy")
+        
+        transaction = strategy.execute_market_sell(
+                        ticker=order.ticker,
+                        contracts=order.sub_orders.main_order.contracts,
+                        broker=self.broker,
+                        dry_run_mode=order.metadata.is_dry_run
+                    )
+        
+        order.results = Results(
+                transaction=transaction,
+                complete=True,
+                additional_data={
+                    "notes": "manually sold",
+                    "timestamp": unix_timestamp_secs()
+                }
+            )
+        
+        order_copy = order.as_copy()
+
+        sell_result = SellResult(order=order_copy, transaction=transaction)
+
+        logging.info(f"Sold order {order_copy}, with result {sell_result}")
+
+        self._notify_of_sell(
+                order=order_copy, 
+                sell_result=sell_result
+            )
+        return sell_result
 
     def _broker_sell_order(self, order: Order) -> SellResult:
+        ### TODO - deprecated, use _sell_order instead
         logging.debug(f"_broker_sell_order()")
         if not isinstance(self.broker, MarketOrderable):
             raise ValueError("Broker must be MarketOrderable")
@@ -571,7 +605,7 @@ class Merchant:
 
         if signal.action() == action.BUY():    
             ## In multi-trade mode, we can have overlapping orders of the same asset for one merchant
-            if self.multitrade_mode():
+            if self.multitrade_mode() or signal.multitrade_mode():
                 self._start_buying()
                 return self._handle_signal_when_buying(signal=signal)
             else:    
@@ -595,7 +629,7 @@ class Merchant:
         now_timestamp_seconds = unix_timestamp_secs()
         rest_interval_seconds = self.rest_interval_minutes() * 60
         if (now_timestamp_seconds > self.last_action_time() + rest_interval_seconds):
-            if self.multitrade_mode():
+            if self.multitrade_mode() or signal.multitrade_mode():
                 if signal.interval() == self.low_interval():
                     if signal.action() == action.SELL():
                         self._start_buying()
@@ -663,7 +697,7 @@ class Merchant:
 
     def _place_orders(self, signal: MerchantSignal) -> Order:
         merchant_params = {}
-        if self.dry_run():
+        if self.dry_run() or signal.dry_run():
             if not signal.ticker() in cfg.DRY_RUN_EXCEPTIONS():
                 merchant_params.update({ "dry_run": True })
         return self.order_strategy().place_orders(
@@ -678,7 +712,8 @@ class Merchant:
     def _get_enhancement_params(self) -> dict:
         return {
             "broker": self.broker,
-            "database": self.table_service
+            "database": self.table_service,
+            "global_dry_run_mode": self.dry_run()
         }
 
     def _strategy_from_enum(self, strategy_enum:OrderStrategies) -> OrderStrategy:

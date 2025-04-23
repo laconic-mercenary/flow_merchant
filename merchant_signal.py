@@ -101,6 +101,18 @@ class MerchantSignal:
         if strategy not in OrderStrategies.__members__.keys():
             logging.error(f"Invalid strategy: {strategy}")
             raise ValueError(f"Invalid strategy {strategy}")
+        
+        # validate multitrade mode
+        multitrade_mode = flowmerchant.get("multitrade_mode", False)
+        if not isinstance(multitrade_mode, bool):
+            logging.error(f"Invalid multitrade mode: {multitrade_mode}")
+            raise ValueError(f"Invalid multitrade mode: {multitrade_mode}")
+        
+        # validate dry run mode
+        dry_run = flowmerchant.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            logging.error(f"Invalid dry run mode: {dry_run}")
+            raise ValueError(f"Invalid dry run mode: {dry_run}")
 
         # Validate data types
         float(security["price"].get("high", 0.0))
@@ -192,6 +204,9 @@ class MerchantSignal:
 
     def rest_after_buy(self) -> bool:
         return self.flowmerchant.get("rest_after_buy", False)
+    
+    def multitrade_mode(self) -> bool:
+        return self.flowmerchant.get("multitrade_mode", False)
         
     def dry_run(self) -> bool:
         return bool(self.flowmerchant.get("dry_run", False))

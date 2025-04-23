@@ -12,19 +12,20 @@ class Database(dict):
         self.author = author
 
 def database() -> Database:
+    ### original https://i.imgur.com/4I95kIa.png
     return Database(
         author=Persona(
             name="Flow Merchant Bot",
-            avatar_url="https://i.imgur.com/4I95kIa.png",
-            portrait_url="https://i.imgur.com/4I95kIa.png",
-            quote="I am the Flow Merchant Bot",
-            advice="I am here to help you make money"
+            avatar_url="https://i.imgur.com/xZpIYpS.png",
+            portrait_url="https://i.imgur.com/xZpIYpS.png",
+            quote="Follow the flow",
+            advice="Follow the flow"
         ),
         winners=[
            Persona(
                name="Tifa",
                avatar_url="https://i.imgur.com/xUt6upj.png",
-               portrait_url="https://i.imgur.com/dMbTucn.jpeg",
+               portrait_url="https://i.imgur.com/xUt6upj.png",
                quote="You are a winner!",
                advice="Keep up the good work!"
            ),
@@ -39,10 +40,17 @@ def database() -> Database:
         leaders=[
             Persona(
                 name="2B",
-                avatar_url="https://i.imgur.com/9dVBduL.jpeg",
-                portrait_url="https://i.imgur.com/GZ9lYbV.jpeg",
+                avatar_url="https://i.imgur.com/Frj5QhZ.jpeg",
+                portrait_url="https://i.imgur.com/Frj5QhZ.jpeg",
                 quote="STAY ON TARGET",
                 advice="Consider selling these - take what you can get."
+            ),
+            Persona(
+                name="Gene",
+                avatar_url="https://i.imgur.com/R5rqYTA.png",
+                portrait_url="https://i.imgur.com/R5rqYTA.png",
+                quote="A boy has a right to dream.",
+                advice="Enjoy the show - or be smart and just sell the damn things."
             )
         ],
         laggards=[
@@ -57,7 +65,7 @@ def database() -> Database:
                 name="Yor",
                 avatar_url="https://i.imgur.com/EV9iNwo.jpeg",
                 portrait_url="https://i.imgur.com/EV9iNwo.jpeg",
-                quote="May I borrow some of your time?.",
+                quote="May I borrow some of your time?",
                 advice="Sell these, or I'll get closer..."
             )
         ],

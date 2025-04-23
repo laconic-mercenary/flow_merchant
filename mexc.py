@@ -9,7 +9,7 @@ import requests
 from urllib.parse import urlencode
 
 from broker_exceptions import ApiError, OrderAlreadyFilledError, OversoldError, InvalidQuantityScale
-from live_capable import LiveCapable, AssetInfoResult
+from live_capable import LiveCapable, AssetInfoResult, BalancesResult, AssetBalance
 from order_capable import Broker, MarketOrderable, LimitOrderable, OrderCancelable, DryRunnable
 from utils import unix_timestamp_ms, unix_timestamp_secs, null_or_empty
 
@@ -48,6 +48,26 @@ class MEXC_API(Broker, MarketOrderable, LimitOrderable, OrderCancelable, LiveCap
             ticker=ticker, 
             order_id=order_id
         )
+    
+    def get_balances(self) -> BalancesResult:
+        acct_info = self._api_get_account_info()
+        if "balances" not in acct_info:
+            raise ValueError(f"expected key balances to be in {acct_info}")
+        balances = acct_info.get("balances")
+        results = {}
+        for balance in balances:
+            if not isinstance(balance, dict):
+                raise TypeError(f"expected balance to be a dict, got {type(balance)}")
+            if "asset" not in balance:
+                raise ValueError(f"expected key asset to be in {balance}")
+            if "free" not in balance:
+                raise ValueError(f"expected key free to be in {balance}")
+            ##if "locked" not in balance:
+            ##    raise ValueError(f"expected key locked to be in {balance}")
+            asset:str = str(balance.get("asset"))
+            available:float = float(balance.get("free"))
+            results[asset] = AssetBalance(asset=asset, available=available)
+        return BalancesResult(balances=results)
     
     def place_market_order(self, ticker:str, action:str, contracts:float, tracking_id = None) -> dict:
         return self._place_market_order(
