@@ -236,6 +236,15 @@ class MerchantReporting:
                 elapsed_time_ms=results.elapsed_ms
             )
 
+    ###
+    # report ledger performance
+    ###
+
+    class ReportTimeframe:
+        def __init__(self, title:str, seconds_in_past:int):
+            self.title = title
+            self.seconds_in_past = seconds_in_past
+
     def report_ledger_performance(self, ledger:Ledger, signer:Signer) -> None:
         if not cfg.REPORTING_LEDGER_PERFORMANCE():
             logging.warning("reporting ledger performance is disabled")
@@ -259,42 +268,39 @@ class MerchantReporting:
                 logging.critical(msg)
                 self.report_problem(msg=msg, exc=Exception(msg))
 
-        author = main_author(db=database())
-
-        now = unix_timestamp_secs()
         report_timeframes = [ 
-            # {
-            #     "title": "Month To Date",
-            #     "timeframe": now - utils_consts.ONE_MONTH_IN_SECS()
-            # },
-            {
-                "title": "12 Hours",
-                "timeframe": now - utils_consts.ONE_HOUR_IN_SECS(hours=12)
-            } 
+            MerchantReporting.ReportTimeframe(
+                title="24 Hours", 
+                seconds_in_past=utils_consts.ONE_HOUR_IN_SECS(hours=24)
+            )
         ]
-        embeds = []
-
+        
         for report_timeframe in report_timeframes:
-            ledger_entries = ledger.get_entries(
-                                    name=None, 
-                                    from_timestamp=report_timeframe.get("timeframe"),
-                                    to_timestamp=now
-                                )
-            entries_by_tag = self._categorize_entries_by_tag(entries=ledger_entries)
+            ledger_entries:list[Entry] = ledger.get_entries(
+                                            name=None, 
+                                            from_timestamp=report_timeframe.seconds_in_past,
+                                            to_timestamp=unix_timestamp_secs()
+                                        )
+            self.report_performance_for_entries(title=report_timeframe.title, ledger_entries=ledger_entries)
+            
+    def report_performance_for_entries(self,ledger_entries:list[Entry], title:str) -> None:        
+        embeds:list[Embed] = []
+        entries_by_tag = self._categorize_entries_by_tag(entries=ledger_entries)
 
-            for tag in entries_by_tag:
-                tagged_entries = entries_by_tag.get(tag)
-                embed = self._embed_from_ledger_entries(
-                            entries=tagged_entries, 
-                            title=f"{report_timeframe.get('title')} - {tag}"
-                        )
-                embeds.append(embed)
+        for tag in entries_by_tag:
+            tagged_entries = entries_by_tag.get(tag)
+            embed:Embed = self._embed_from_ledger_entries(
+                                entries=tagged_entries, 
+                                title=f"{title} - {tag}"
+                            )
+            embeds.append(embed)
 
         embed_limit = 10
         if len(embeds) > embed_limit:
             logging.warning(f"reached discord embed limit of {embed_limit} - truncating report...")
             embeds = embeds[:embed_limit]
 
+        author = main_author(db=database())
         msg = WebhookMessage(
             username=author.name,
             avatar_url=author.avatar_url,
@@ -393,7 +399,8 @@ class MerchantReporting:
                 spread_payload = spread_payload + f"{spread_icon} *{spread.take_profit}/{spread.stop_loss}* ({len(spread_results)}): {round(spread.win_pct, 2) * 100.0}% ({spread.winning_trades}/{spread.total_trades} trades) - {round(spread.total_pnl, 4)}\n"
 
             for ticker in ticker_results:
-                ticker_payload = ticker_payload + f"{ticker_icon} *{ticker.ticker}* ({len(ticker_results)}): {round(ticker.win_pct, 2) * 100.0}% ({ticker.winning_trades}/{ticker.total_trades} trades) - {round(ticker.total_pnl, 4)}\n"
+                ticker_link = f"[{ticker.ticker}](https://stockton-jpe01-flow-merchant.azurewebsites.net/api/command/report_performance/{ticker.ticker}?securityType=crypto)"
+                ticker_payload = ticker_payload + f"{ticker_icon} *{ticker_link}* ({len(ticker_results)}): {round(ticker.win_pct, 2) * 100.0}% ({ticker.winning_trades}/{ticker.total_trades} trades) - {round(ticker.total_pnl, 4)}\n"
 
             fields.append(Field(
                 name=f"Summary",

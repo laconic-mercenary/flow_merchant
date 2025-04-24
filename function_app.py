@@ -12,7 +12,7 @@ from merchant import Merchant, PositionsCheckResult
 from merchant_reporting import MerchantReporting
 from server import *
 from table_ledger import TableLedger, HashSigner
-from utils import null_or_empty, time_utc_as_str, roll_dice_10percent as roll_dice
+from utils import null_or_empty, time_utc_as_str, unix_timestamp_secs, roll_dice_10percent as roll_dice, consts as util_consts
 
 app = func.FunctionApp()
 
@@ -112,24 +112,62 @@ def connect_table_service() -> TableServiceClient:
     return TableServiceClient.from_connection_string(os.environ["storageAccountConnectionString"])
 
 def handle_instruction_for_command(command:str, identifier:str, security_type:str) -> func.HttpResponse:
+    logging.info(f"received command: command={command}, identifier={identifier}, security_type={security_type}")
     if command == "sell":
-        broker = BrokerRepository().get_for_security(security_type=security_type)
-        with connect_table_service() as table_service:        
-            merchant = Merchant(table_service=table_service, broker=broker)
-            subscribe_events(merchant=merchant)
-            result = merchant.sell(identifier=identifier)
-            if result is None:
-                return rx_not_found("Unable to sell - order not found or no longer exists")
-            return rx_json({
-                "ticker": result.order.ticker,
-                "id": result.order.metadata.id,
-                "dry_run": result.order.metadata.is_dry_run,
-                "action": "SELL", 
-                "result": "OK",
-                "timestamp": time_utc_as_str()
-            })
-    logging.warning(f"unknown command {command}")
+        return handle_command_for_sell(identifier=identifier, security_type=security_type)
+    elif command == "report_performance":
+        return handle_command_for_report_performance(identifer=identifier)
+    logging.warning(f"unknown command {command} - ignoring")
     return rx_bad_request()
+
+def handle_command_for_sell(identifier:str, security_type:str) -> func.HttpResponse:
+    broker = BrokerRepository().get_for_security(security_type=security_type)
+    with connect_table_service() as table_service:        
+        merchant = Merchant(table_service=table_service, broker=broker)
+        subscribe_events(merchant=merchant)
+        result = merchant.sell(identifier=identifier)
+        if result is None:
+            return rx_not_found("Unable to sell - order not found or no longer exists")
+        return rx_json({
+            "ticker": result.order.ticker,
+            "id": result.order.metadata.id,
+            "dry_run": result.order.metadata.is_dry_run,
+            "action": "SELL", 
+            "result": "OK",
+            "timestamp": time_utc_as_str()
+        })
+    
+def handle_command_for_report_performance(identifer:str) -> func.HttpResponse:
+    identifer = identifer.strip()
+    if len(identifer) > 50:
+        logging.warning(f"identifer too long: {identifer}")
+        return rx_bad_request()
+    if not identifer.isalnum():
+        logging.warning(f"identifer should be alphanumeric: {identifer}")
+        return rx_bad_request()
+    if identifer.upper() != identifer:
+        logging.warning(f"identifer should be upper case: {identifer}")
+        return rx_bad_request()
+    with connect_table_service() as table_service:
+        table_name = "fmorderledger"
+        table_client = table_service.create_table_if_not_exists(table_name=table_name)
+        table_ledger = TableLedger(table_client=table_client)
+        report_hours = 24
+        entries = table_ledger.get_entries(
+                        name=identifer,
+                        from_timestamp=util_consts.ONE_HOUR_IN_SECS(hours=report_hours),
+                        to_timestamp=unix_timestamp_secs()
+                    )
+        MerchantReporting().report_performance_for_entries(
+                                ledger_entries=entries,
+                                title=f"{identifer} - {report_hours} hours"
+                            )
+        return rx_json({
+            "identifer": identifer,
+            "report_hours": report_hours,
+            "ledger_entries_processed": len(entries),
+            "status": "ok"
+        })
 
 def handle_for_positions(security_type:str, table_service:TableServiceClient) -> func.HttpResponse:
     broker = BrokerRepository().get_for_security(security_type=security_type)
