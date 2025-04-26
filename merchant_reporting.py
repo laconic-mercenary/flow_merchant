@@ -268,18 +268,23 @@ class MerchantReporting:
                 logging.critical(msg)
                 self.report_problem(msg=msg, exc=Exception(msg))
 
-        report_timeframes = [ 
+        report_timeframes = [
+            MerchantReporting.ReportTimeframe(
+                title="5 Days", 
+                seconds_in_past=utils_consts.ONE_DAY_IN_SECS(days=5)
+            ),
             MerchantReporting.ReportTimeframe(
                 title="24 Hours", 
                 seconds_in_past=utils_consts.ONE_HOUR_IN_SECS(hours=24)
             )
         ]
         
+        now_timestamp = unix_timestamp_secs()
         for report_timeframe in report_timeframes:
             ledger_entries:list[Entry] = ledger.get_entries(
                                             name=None, 
-                                            from_timestamp=report_timeframe.seconds_in_past,
-                                            to_timestamp=unix_timestamp_secs()
+                                            from_timestamp=now_timestamp - report_timeframe.seconds_in_past,
+                                            to_timestamp=now_timestamp
                                         )
             self.report_performance_for_entries(title=report_timeframe.title, ledger_entries=ledger_entries)
             
@@ -399,7 +404,7 @@ class MerchantReporting:
                 spread_payload = spread_payload + f"{spread_icon} *{spread.take_profit}/{spread.stop_loss}* ({len(spread_results)}): {round(spread.win_pct, 2) * 100.0}% ({spread.winning_trades}/{spread.total_trades} trades) - {round(spread.total_pnl, 4)}\n"
 
             for ticker in ticker_results:
-                ticker_link = f"[{ticker.ticker}](https://stockton-jpe01-flow-merchant.azurewebsites.net/api/command/report_performance/{ticker.ticker}?securityType=crypto)"
+                ticker_link = f"[{ticker.ticker}](https://stockton-jpe01-flow-merchant.azurewebsites.net/api/command/report_performance/{ticker.ticker})"
                 ticker_payload = ticker_payload + f"{ticker_icon} *{ticker_link}* ({len(ticker_results)}): {round(ticker.win_pct, 2) * 100.0}% ({ticker.winning_trades}/{ticker.total_trades} trades) - {round(ticker.total_pnl, 4)}\n"
 
             fields.append(Field(

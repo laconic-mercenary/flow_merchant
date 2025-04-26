@@ -75,3 +75,10 @@ class DryRunnable(ABC):
     @abstractmethod
     def cancel_order_test(self, ticker: str, order_id: str) -> dict:
         pass
+
+###
+# invalid broker
+###
+class InvalidBroker(Broker):
+    def get_name(self):
+        return "Invalid Broker"

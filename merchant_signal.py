@@ -2,7 +2,8 @@
 import uuid
 import logging
 
-from order_strategies import OrderStrategies
+from order_strategies import OrderStrategies, strategy_enum_from_str
+from security_types import SecurityTypes, security_type_from_str, valid_types
 
 class MerchantSignal:
 
@@ -56,22 +57,43 @@ class MerchantSignal:
         if not security:
             logging.error("Security information is missing")
             raise ValueError("Security information is required")
-        required_security_keys = ["ticker", "contracts", "interval", "price"]
-        for key in required_security_keys:
+        
+        required_security_keys:list[tuple[str, type]] = [
+            ("ticker", str, [], None), 
+            ("contracts", (float, int), [], None), 
+            ("interval", str, [], None), 
+            ("price", (float, dict), [], None),
+            ("type", str, valid_types(), None)
+        ]
+        for key, _type, valid_values, default in required_security_keys:
             if key not in security:
-                logging.error(f"Missing required security key: {key}")
-                raise ValueError(f"Missing required security key: {key}")
-
+                if default is None:
+                    logging.error(f"Missing required security key: {key}")
+                    raise ValueError(f"Missing required security key: {key}")
+                else:
+                    security[key] = default
+                    continue
+            if not isinstance(security[key], _type):
+                logging.error(f"Invalid type for security key: {key}")
+                raise ValueError(f"Invalid type for security key: {key}, got {type(security[key])}")
+            if len(valid_values) != 0:
+                if security[key] not in valid_values:
+                    logging.error(f"Invalid value for security key: {key}")
+                    raise ValueError(f"Invalid value for security key: {key}, valid values: {valid_values}")
+            
         # Validate price
         price = security.get("price")
         if not price:
             logging.error("Price information is missing in security")
             raise ValueError("Price information is required in security")
-        required_price_keys = ["close"]
-        for key in required_price_keys:
+        required_price_keys:list[tuple] = [("close", (float, str))]
+        for key, _type in required_price_keys:
             if key not in price:
                 logging.error(f"Missing required price key: {key}")
                 raise ValueError(f"Missing required price key: {key}")
+            if not isinstance(price[key], _type):
+                logging.error(f"Invalid type for price key: {key}")
+                raise ValueError(f"Invalid type for price key: {key}")
 
         # Validate flowmerchant
         flowmerchant = msg_body.get("flowmerchant")
@@ -153,8 +175,11 @@ class MerchantSignal:
     def exchange(self) -> str:
         return self.security.get("exchange", "none")
 
-    def security_type(self) -> str:
-        return self.security.get("type", "crypto")
+    def security_type(self) -> SecurityTypes:
+        if "type" not in self.security:
+            raise ValueError("type key not found in security")
+        ### TODO - remove the default crypto
+        return security_type_from_str(self.security.get("type", "crypto"))
 
     def contracts(self) -> int:
         return self.security.get("contracts")
@@ -212,7 +237,7 @@ class MerchantSignal:
         return bool(self.flowmerchant.get("dry_run", False))
     
     def strategy(self) -> OrderStrategies:
-        return self.flowmerchant.get("strategy", OrderStrategies.TRAILING_STOP)
+        return strategy_enum_from_str(self.flowmerchant.get("strategy", OrderStrategies.TRAILING_STOP.value))
     
     def tags(self) -> list[str]:
         _tags = self.metadata.get("tags", [])

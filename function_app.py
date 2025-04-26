@@ -14,7 +14,7 @@ from server import *
 from table_ledger import TableLedger, HashSigner
 from utils import null_or_empty, time_utc_as_str, unix_timestamp_secs, roll_dice_10percent as roll_dice, consts as util_consts
 
-app = func.FunctionApp()
+app = func.FunctionApp()        
 
 ###
 # /positions
@@ -49,25 +49,39 @@ def positions(req: func.HttpRequest) -> func.HttpResponse:
             auth_level=func.AuthLevel.ANONYMOUS )
 def signals(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("signals() - invoked")
+    request_body = req.get_body()
     try:
-        if req.get_body() is None:
+        if request_body is None:
+            logging.warning(f"signals() - empty request body")
             return rx_bad_request()
-        if null_or_empty(req.get_body().decode("utf-8")):
+        if null_or_empty(request_body.decode("utf-8")):
+            logging.warning(f"signals() - empty request body")
             return rx_bad_request()
         
         headers = get_headers(req=req)
         logging.info(f"request headers: {headers}")
-        message_body = get_json_body(req=req)
-        logging.info(f"received merchant signal: {message_body}")
+        signal_dict = get_json_body(req=req)
+        logging.info(f"received merchant signal: {signal_dict}")
 
-        return handle_for_signals(message_body=message_body)
+        return handle_for_signals(message_body=signal_dict)
     except json.decoder.JSONDecodeError as jde:
-        body = req.get_body().decode("utf-8")
-        logging.error(f"error handling signals - {jde}, request body - {body}", exc_info=True)
-        report_problem(msg=f"Invalid JSON received - double check your signal", exc=jde, additional_data={"request_body": body})
+        if request_body is not None:
+            request_body = request_body.decode("utf-8")
+        logging.error(f"error handling signals - {jde}, request body - {request_body}", exc_info=True)
+        report_problem(
+            msg=f"Invalid JSON received - double check your signal", 
+            exc=jde, 
+            additional_data={"request_body": request_body}
+        )
     except Exception as e:
-        logging.error(f"error handling signals - {e}, request body - {req.get_body().decode('utf-8')}", exc_info=True)
-        report_problem(msg=f"error handling signals", exc=e)
+        if request_body is not None:
+            request_body = request_body.decode("utf-8")
+        logging.error(f"error handling signals - {e}, request body - {request_body}", exc_info=True)
+        report_problem(
+            msg=f"Invalid JSON received - double check your signal", 
+            exc=jde, 
+            additional_data={"request_body": request_body}
+        )
     return rx_bad_request()
 
 ###
@@ -80,24 +94,23 @@ def signals(req: func.HttpRequest) -> func.HttpResponse:
 def command(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("command() - invoked")
     if "instruction" not in req.route_params:
+        logging.warning(f"command() - missing instruction")
         return rx_bad_request()
     if "identifier" not in req.route_params:
-        return rx_bad_request()
-    if "securityType" not in req.params:
+        logging.warning(f"command() - missing identifier")
         return rx_bad_request()
     
     instruction = req.route_params.get("instruction")
     identifier = req.route_params.get("identifier")
-    security_type = req.params.get("securityType")
 
-    if null_or_empty(instruction) or null_or_empty(identifier) or null_or_empty(security_type):
-        logging.warning(f"command() - missing instruction({instruction}) or identifier({identifier}) or security type({security_type})")  
+    if null_or_empty(instruction) or null_or_empty(identifier):
+        logging.warning(f"command() - missing instruction({instruction}) or identifier({identifier})")  
         return rx_bad_request()
     try:
+        logging.info(f"command() - handling instruction: {instruction}, identifier: {identifier}")
         return handle_instruction_for_command(
             command=instruction, 
-            identifier=identifier,
-            security_type=security_type
+            identifier=identifier
         )
     except Exception as e:
         logging.error(f"error handling cmd - {e}", exc_info=True)
@@ -111,23 +124,29 @@ def command(req: func.HttpRequest) -> func.HttpResponse:
 def connect_table_service() -> TableServiceClient:
     return TableServiceClient.from_connection_string(os.environ["storageAccountConnectionString"])
 
-def handle_instruction_for_command(command:str, identifier:str, security_type:str) -> func.HttpResponse:
-    logging.info(f"received command: command={command}, identifier={identifier}, security_type={security_type}")
+def handle_instruction_for_command(command:str, identifier:str) -> func.HttpResponse:
+    logging.info(f"received command: command={command}, identifier={identifier}")
     if command == "sell":
-        return handle_command_for_sell(identifier=identifier, security_type=security_type)
+        return handle_command_for_sell(identifier=identifier)
     elif command == "report_performance":
         return handle_command_for_report_performance(identifer=identifier)
     logging.warning(f"unknown command {command} - ignoring")
     return rx_bad_request()
 
-def handle_command_for_sell(identifier:str, security_type:str) -> func.HttpResponse:
-    broker = BrokerRepository().get_for_security(security_type=security_type)
+def handle_command_for_sell(identifier:str) -> func.HttpResponse:
+    broker_repo = BrokerRepository()
     with connect_table_service() as table_service:        
-        merchant = Merchant(table_service=table_service, broker=broker)
+        merchant = Merchant(table_service=table_service, broker=broker_repo.invalid_broker())
         subscribe_events(merchant=merchant)
-        result = merchant.sell(identifier=identifier)
-        if result is None:
+
+        order, position = merchant.find_order_by_identifier(identifier=identifier)
+        if order is None or position is None:
             return rx_not_found("Unable to sell - order not found or no longer exists")
+        
+        broker = broker_repo.get_for_security(order.metadata.security_type.value)
+        merchant.main_broker(main_broker=broker)
+        result = merchant.sell(order=order, position=position)
+
         return rx_json({
             "ticker": result.order.ticker,
             "id": result.order.metadata.id,

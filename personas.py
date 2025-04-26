@@ -56,8 +56,8 @@ def database() -> Database:
         laggards=[
             Persona(
                 name="KOS-MOS",
-                avatar_url="https://i.imgur.com/xnAyrOR.gif",
-                portrait_url="https://i.imgur.com/dPtU0TQ.jpeg",
+                avatar_url="https://i.imgur.com/92rAPB0.jpeg",
+                portrait_url="https://i.imgur.com/92rAPB0.jpeg",
                 quote="Target acquired.",
                 advice="Get rid of these - or I will."
             ),

@@ -1,5 +1,6 @@
 from order_strategies import OrderStrategies, strategy_enum_from_str
-from transactions import Transaction, TransactionAction
+from security_types import SecurityTypes, security_type_from_str
+from transactions import Transaction
 from utils import null_or_empty
 
 import json
@@ -59,11 +60,12 @@ class SubOrders(dict):
         return equals
 
 class Metadata(dict):
-    def __init__(self, id:str, time_created:int, is_dry_run:bool, tags:list[str] = []):
+    def __init__(self, id:str, time_created:int, is_dry_run:bool, security_type:SecurityTypes, tags:list[str] = []):
         super().__init__(
             id=id, 
             time_created=time_created, 
             is_dry_run=is_dry_run,
+            security_type=security_type,
             tags=tags
         )
         if null_or_empty(id):
@@ -72,11 +74,19 @@ class Metadata(dict):
             raise ValueError(f"Metadata time_created is None")
         if is_dry_run is None:
             is_dry_run = False
+        if security_type is None:
+            raise ValueError(f"Metadata security_type is None")
+        if not isinstance(security_type, SecurityTypes):
+            if isinstance(security_type, str):
+                security_type = security_type_from_str(security_type_str=security_type)
+            else:
+                raise ValueError(f"Metadata security_type is not a valid security type, got {type(security_type)}")
         if tags is None:
             tags = []
         self.id = id
         self.time_created = time_created
         self.is_dry_run = is_dry_run
+        self.security_type = security_type
         self.tags = tags
 
     def __eq__(self, value) -> bool:
@@ -86,6 +96,7 @@ class Metadata(dict):
         equals = equals and self.time_created == value.time_created
         equals = equals and self.is_dry_run == value.is_dry_run
         equals = equals and self.tags == value.tags
+        equals = equals and self.security_type == value.security_type
         return equals
     
 class Projections(dict):
@@ -279,10 +290,12 @@ class Order(dict):
                 contracts=Order._key_or_none(order_dict["sub_orders"]["take_profit"], "contracts")
             )
         )
+        ### TODO: remove the crypto default after awhile
         metadata = Metadata(
             id=order_dict["metadata"]["id"],
             time_created=order_dict["metadata"]["time_created"],
             is_dry_run=order_dict["metadata"]["is_dry_run"],
+            security_type="crypto" if "security_type" not in order_dict["metadata"] else order_dict["metadata"]["security_type"],
             tags=[] if "tags" not in order_dict["metadata"] else order_dict["metadata"]["tags"]
         )
         merchant_params = MerchantParams(

@@ -155,6 +155,7 @@ class BracketStrategy(OrderStrategy):
                 id = str(uuid.uuid4()),
                 time_created = unix_timestamp_ms(),
                 is_dry_run = dry_run_mode,
+                security_type = signal.security_type(),
                 tags=signal.tags()
             ),
             merchant_params = MerchantParams(

@@ -94,10 +94,13 @@ class Merchant:
 
     ### Selling
 
-    def sell(self, identifier: str) -> SellResult:
-        logging.debug(f"sell()")
+    def find_order_by_identifier(self, identifier:str) -> tuple[Order, dict]:
         if null_or_empty(identifier):
             raise ValueError("identifier cannot be null or empty")
+        ### remove all whitespace
+        identifier = "".join(identifier.split())
+        if len(identifier) > 200:
+            raise ValueError("identifier cannot be more than 200 characters")
         current_positions = self._query_current_positions()
         for position in current_positions:
             position_order_list = json.loads(position.get(keys.BROKER_DATA()))
@@ -105,13 +108,22 @@ class Merchant:
                 order = Order.from_dict(order_dict)
                 order_sell_id = order_digest(order)
                 if order_sell_id == identifier:
-                    logging.info(f"Selling {order}")
-                    results = self._sell_order(order=order)
-                    self._remove_order_from_storage(position=position, removal_order=order)
-                    return results
-        logging.warning(f"Unable to find order with identifier {identifier}")
-        return None
-    
+                    return order, position
+        return None, None
+
+    def sell(self, order:Order, position:dict) -> SellResult:
+        if order is None:
+            raise ValueError("order cannot be None")
+        if position is None:
+            raise ValueError("position cannot be None")
+        if not isinstance(order, Order):
+            raise ValueError("order must be Order")
+        if not isinstance(position, dict):
+            raise ValueError("position must be dict")
+        results = self._sell_order(order=order)
+        self._remove_order_from_storage(position=position, removal_order=order)
+        return results
+        
     def _sell_order(self, order: Order) -> SellResult:
         strategy = self._strategy_from_order(order=order)
         if not isinstance(strategy, BracketStrategy):
@@ -852,3 +864,7 @@ class Merchant:
     def dry_run(self) -> bool:
         return cfg.DRY_RUN_MODE()
     
+    def main_broker(self, main_broker:Broker = None) -> Broker:
+        if main_broker is not None:
+            self.broker = main_broker
+        return self.broker
