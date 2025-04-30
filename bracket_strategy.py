@@ -23,6 +23,9 @@ class BracketStrategy(OrderStrategy):
         if ticker not in results:
             raise ValueError(f"Expected ticker {ticker} to be in current prices {results}")
         return results.get(ticker)
+    
+    def handle_price_change(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
+        return HandleResult(target_order=order, complete=False)
 
     def place_orders(self, broker:Broker, signal: MerchantSignal, merchant_state:dict, merchant_params:dict = {}) -> Order:
         if broker is None:

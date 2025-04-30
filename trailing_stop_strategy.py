@@ -20,6 +20,9 @@ class TrailingStopStrategy(BracketStrategy):
     def handle_stop_loss(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
         return super().handle_stop_loss(broker, order, merchant_params)
 
+    def handle_price_change(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
+        return HandleResult(target_order=order, complete=False)
+
     def handle_take_profit(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
         ticker = order.ticker
         current_price = merchant_params.get("current_price")

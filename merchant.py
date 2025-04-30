@@ -363,13 +363,13 @@ class Merchant:
             stop_loss_order = order.sub_orders.stop_loss
             take_profit_order = order.sub_orders.take_profit
             
-            is_dry_run = order.metadata.is_dry_run
-            current_price = current_prices.get(order.ticker)
-            main_order_price = main_order.price
-            take_profit_price = take_profit_order.price
-            stop_loss_order_id = stop_loss_order.id
-            stop_loss_price = stop_loss_order.price
-            strategy = self._strategy_from_order(order=order)
+            is_dry_run:bool = order.metadata.is_dry_run
+            current_price:float = current_prices.get(order.ticker)
+            main_order_price:float = main_order.price
+            take_profit_price:float = take_profit_order.price
+            stop_loss_order_id:str = stop_loss_order.id
+            stop_loss_price:float = stop_loss_order.price
+            strategy:OrderStrategy = self._strategy_from_order(order=order)
 
             logging.info(f"Checking position: {ticker}, strategy: {strategy.name()} order:{order}")
 
@@ -411,14 +411,17 @@ class Merchant:
                     )
                     results.update({ "updated": True })
                 else:
-                    order_result = order.as_copy()
-                    if current_price > main_order_price:
-                        results["orders"]["leaders"].append(order_result.__dict__)
-                        new_order_list.append(order_result.__dict__)
-                    else:
-                        results["orders"]["laggards"].append(order_result.__dict__)
-                        new_order_list.append(order_result.__dict__)
-
+                    self._price_changed(
+                        order=order,
+                        strategy=strategy,
+                        results=results,
+                        new_order_list=new_order_list,
+                        merchant_params={ 
+                            "current_price": current_price,
+                            "dry_run_order": is_dry_run
+                        }
+                    )
+                    
         position.update({ keys.BROKER_DATA(): json.dumps(new_order_list) })
 
         return results
@@ -454,6 +457,28 @@ class Merchant:
             results["orders"]["winners"].append(order_result.__dict__)
         else:
             results["orders"]["losers"].append(order_result.__dict__)
+
+    def _price_changed(self, order:Order, results:dict, strategy:OrderStrategy, new_order_list:list[dict], merchant_params:dict) -> None:
+        handle_pc_result = strategy.handle_price_change(
+                                broker=self.broker,
+                                order=order,
+                                merchant_params=merchant_params
+                            )
+        order_result = order.as_copy()
+        if handle_pc_result.complete:
+            if handle_pc_result.transaction is None:
+                raise ValueError(f"a transaction is required if handling is completed - check the strategy {type(strategy)} for mistakes")
+            if handle_pc_result.transaction.price > order.sub_orders.main_order.price:
+                results["orders"]["winners"].append(order_result.__dict__)
+            else:
+                results["orders"]["losers"].append(order_result.__dict__)
+        else:
+            if merchant_params.get("current_price") > order.sub_orders.main_order.price:
+                results["orders"]["leaders"].append(order_result.__dict__)
+            else:
+                results["orders"]["laggards"].append(order_result.__dict__)
+            new_order_list.append(order_result.__dict__)
+
         
     def _check_broker(self) -> bool:
         result = True

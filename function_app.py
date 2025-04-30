@@ -79,8 +79,7 @@ def signals(req: func.HttpRequest) -> func.HttpResponse:
         logging.error(f"error handling signals - {e}, request body - {request_body}", exc_info=True)
         report_problem(
             msg=f"Invalid JSON received - double check your signal", 
-            exc=jde, 
-            additional_data={"request_body": request_body}
+            exc=jde
         )
     return rx_bad_request()
 

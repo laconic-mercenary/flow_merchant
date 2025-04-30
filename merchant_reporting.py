@@ -5,7 +5,6 @@ from merchant_keys import keys as mkeys
 from merchant_order import Order
 from merchant_signal import MerchantSignal
 from merchant import PositionsCheckResult
-from persona import Persona
 from personas import database, main_author, next_laggard_persona, next_leader_persona, next_loser_persona, next_winner_persona
 from security import order_digest
 from transactions import multiply, calculate_percent_diff, calculate_pnl
@@ -40,7 +39,24 @@ class cfg:
     def REPORTING_IGNORE_DRY_RUN() -> bool:
         enabled = os.environ.get("MERCHANT_REPORTING_IGNORE_DRY_RUN", "false")
         return enabled.lower() == "true"
-
+    
+    def REPORTING_TIMEFRAMES() -> dict[str, int]:
+        timeframes_str = os.environ.get("MERCHANT_REPORTING_TIMEFRAMES", "24 Hours, 5 Days")
+        timeframes_split = timeframes_str.split(",")
+        results:dict[str, int] = {}
+        for timeframe_str in timeframes_split:
+            timeframe_str = timeframe_str.strip()
+            amount, timeframe = tuple(timeframe_str.split(" "))
+            amount:int = int(amount)
+            if amount < 1:
+                raise ValueError(f"Invalid timeframe: {timeframe}, must be at least 1")
+            if timeframe == "Hours":
+                results[timeframe_str] = utils_consts.ONE_HOUR_IN_SECS(hours=amount)
+            elif timeframe == "Days":
+                results[timeframe_str] = utils_consts.ONE_DAY_IN_SECS(days=amount)
+            else:
+                raise ValueError(f"Invalid timeframe: {timeframe}, must be one of {['Hours', 'Days']}")
+        return results
 
 class MerchantReporting:
 
@@ -83,10 +99,18 @@ class MerchantReporting:
             ]
         ))
 
+    ###
+    # on signal received
+    ###
+
     def report_signal_received(self, signal:MerchantSignal) -> None:
         ### nothing for now, keep the traffic lean
         if not cfg.REPORTING_SIGNAL_RECEIVED():
             logging.debug("signal received reporting is disabled")
+
+    ###
+    # on merchant state change (buying, selling, shopping, etc)
+    ###
 
     def report_state_changed(self, merchant_id: str, status: str, state: dict) -> None:
         if not cfg.REPORTING_STATE_CHANGED():
@@ -115,6 +139,10 @@ class MerchantReporting:
             content=msg,
             embeds=[]
         ))
+
+    ###
+    # on order placed
+    ###
 
     def report_order_placed(self, order:Order) -> None:
         if not cfg.REPORTING_NEW_ORDERS():
@@ -206,6 +234,10 @@ class MerchantReporting:
             ]
         ))
 
+    ###
+    # report check results
+    ###
+
     def report_check_results(self, results:PositionsCheckResult) -> None:
         if not cfg.REPORTING_CHECK_RESULTS():
             logging.warning("IMPORTANT - check results reporting (winners, leaders, laggards, losers) is currently disabled!")
@@ -267,18 +299,17 @@ class MerchantReporting:
                 msg = f"bad entries found in ledger: {bad_entries}"
                 logging.critical(msg)
                 self.report_problem(msg=msg, exc=Exception(msg))
-
-        report_timeframes = [
-            MerchantReporting.ReportTimeframe(
-                title="5 Days", 
-                seconds_in_past=utils_consts.ONE_DAY_IN_SECS(days=5)
-            ),
-            MerchantReporting.ReportTimeframe(
-                title="24 Hours", 
-                seconds_in_past=utils_consts.ONE_HOUR_IN_SECS(hours=24)
+                
+        report_timeframes = []
+        report_timeframes_dict = cfg.REPORTING_TIMEFRAMES()
+        for title, seconds_in_past in report_timeframes_dict.items():
+            report_timeframes.append(
+                MerchantReporting.ReportTimeframe(
+                    title=title, 
+                    seconds_in_past=seconds_in_past
+                )
             )
-        ]
-        
+            
         now_timestamp = unix_timestamp_secs()
         for report_timeframe in report_timeframes:
             ledger_entries:list[Entry] = ledger.get_entries(
@@ -702,7 +733,9 @@ if __name__ == "__main__":
     import unittest
 
     class Test(unittest.TestCase):
-        def test_send_check_result(self):
-            instance = MerchantReporting()
 
+        def test_timeframes(self):
+            os.environ["MERCHANT_REPORTING_TIMEFRAMES"] = "1 Hours, 2 Days"
+            print(cfg.REPORTING_TIMEFRAMES())
+            
     unittest.main()

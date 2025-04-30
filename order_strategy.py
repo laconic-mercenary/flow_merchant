@@ -31,5 +31,9 @@ class OrderStrategy(ABC):
     def handle_stop_loss(self, broker: Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
         pass
 
+    @abstractmethod
+    def handle_price_change(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
+        pass
+
     def name(self) -> str:
         return type(self).__name__
