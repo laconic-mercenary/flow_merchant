@@ -1,4 +1,5 @@
 import datetime
+import math
 import random
 import time
 
@@ -39,6 +40,20 @@ def time_from_timestamp(timestamp:int) -> str:
     
 def time_utc_as_str() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+def days_past_as_str(seconds:int) -> str:
+    if seconds is None:
+        raise ValueError("seconds is None")
+    if seconds < 0:
+        raise ValueError("seconds is negative")
+    seconds_in_a_day = consts.ONE_DAY_IN_SECS(days=1)
+    if seconds < seconds_in_a_day:
+        return "< 1 day"
+    days = seconds / seconds_in_a_day
+    days_floored = math.floor(days)
+    if days_floored == 1:
+        return "1 day"
+    return f"{days_floored} days"
 
 def unix_timestamp_secs_dec() -> float:
     return float(unix_timestamp_ms()) / float(consts.MILLIS_IN_SECONDS())

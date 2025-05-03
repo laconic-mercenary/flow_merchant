@@ -12,9 +12,63 @@ from merchant import Merchant, PositionsCheckResult
 from merchant_reporting import MerchantReporting
 from server import *
 from table_ledger import TableLedger, HashSigner
-from utils import null_or_empty, time_utc_as_str, unix_timestamp_secs, roll_dice_10percent as roll_dice, consts as util_consts
+from utils import null_or_empty, time_utc_as_str, unix_timestamp_secs, roll_dice_5percent as roll_dice, consts as util_consts
 
 app = func.FunctionApp()        
+
+###
+# /test
+###
+
+@app.route(route="test/{identifier}/{hours}",
+           methods=["GET"],
+           auth_level=func.AuthLevel.ANONYMOUS)
+def test(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info("test() - invoked")
+    if "identifier" not in req.route_params:
+        return rx_bad_request("identifier is required")
+    if "hours" not in req.route_params:
+        return rx_bad_request("hours is required")
+    identifier:str = req.route_params.get("identifier")
+    hours:int = int(req.route_params.get("hours"))
+    identifier = identifier.strip().upper()
+    if not identifier.isalpha():
+        return rx_bad_request("identifier must be alphabetic")
+    if hours <= 0:
+        return rx_bad_request("hours must be greater than 0")
+    if hours > 99999:
+        return rx_bad_request("hours must be less than 99999")
+    with connect_table_service() as table_service:        
+        table_name = "fmorderledger"
+        table_client = table_service.create_table_if_not_exists(table_name=table_name)
+        table_ledger = TableLedger(table_client=table_client)
+        report_hours = hours
+        now_ts = unix_timestamp_secs()
+        from_ts = now_ts - util_consts.ONE_HOUR_IN_SECS(hours=report_hours)
+        entries = table_ledger.get_entries(
+                        name=identifier,
+                        from_timestamp=from_ts,
+                        to_timestamp=now_ts
+                    )
+        entries.sort(key=lambda x: x.timestamp)
+        MerchantReporting().report_performance_for_entries(
+                                ledger_entries=entries,
+                                title=f"{identifier} - {report_hours} hours"
+                            )
+    win_ct = 0
+    for x in entries: 
+        if x.amount > 0.0: 
+            win_ct += 1
+    win_rate = win_ct / len(entries) if len(entries) > 0 else 0.0
+    return rx_json({
+        "identifier": identifier,
+        "hours": hours,
+        "count": len(entries),
+        "profit": sum([x.amount for x in entries]),
+        "win_rate": win_rate,
+        "first": Order.from_dict(entries[0].data).__dict__ if len(entries) > 0 else "none",
+        "last": Order.from_dict(entries[-1].data).__dict__ if len(entries) > 0 else "none",
+    })
 
 ###
 # /positions
@@ -171,10 +225,12 @@ def handle_command_for_report_performance(identifer:str) -> func.HttpResponse:
         table_client = table_service.create_table_if_not_exists(table_name=table_name)
         table_ledger = TableLedger(table_client=table_client)
         report_hours = 24
+        now_ts = unix_timestamp_secs()
+        from_ts = now_ts - util_consts.ONE_HOUR_IN_SECS(hours=report_hours)
         entries = table_ledger.get_entries(
                         name=identifer,
-                        from_timestamp=util_consts.ONE_HOUR_IN_SECS(hours=report_hours),
-                        to_timestamp=unix_timestamp_secs()
+                        from_timestamp=from_ts,
+                        to_timestamp=now_ts
                     )
         MerchantReporting().report_performance_for_entries(
                                 ledger_entries=entries,
@@ -184,7 +240,9 @@ def handle_command_for_report_performance(identifer:str) -> func.HttpResponse:
             "identifer": identifer,
             "report_hours": report_hours,
             "ledger_entries_processed": len(entries),
-            "status": "ok"
+            "status": "ok",
+            "from_timestamp": from_ts,
+            "to_timestamp": now_ts
         })
 
 def handle_for_positions(security_type:str, table_service:TableServiceClient) -> func.HttpResponse:

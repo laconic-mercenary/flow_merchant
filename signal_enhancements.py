@@ -23,30 +23,14 @@ class RandomBracket(SignalEnhancement):
         ### interval is the LOW interval, not the HIGH
         self._BRACKETS = {
             "3": [
-                (1.0, 0.5),
-                (1.0, 1.0)
+                (0.25, 0.25),
+                (0.5, 0.5),
+                (1.0, 1.0),
+                (3.0, 1.0)
             ],
             "5": [
-                (0.75, 0.25),
-                (1.0, 0.5),
-                (1.0, 1.0),
-                (3.0, 1.0)
-            ],
-            "15": [
-                (0.75, 0.25),
-                (1.0, 0.5),
-                (1.0, 1.0),
-                (3.0, 1.0)
-            ],
-            "30": [
-                (0.75, 0.25),
-                (1.0, 0.5),
-                (1.0, 1.0),
-                (3.0, 1.0)
-            ],
-            "60": [
-                (0.75, 0.25),
-                (1.0, 0.5),
+                (0.25, 0.25),
+                (0.5, 0.5),
                 (1.0, 1.0),
                 (3.0, 1.0)
             ]
@@ -60,19 +44,17 @@ class RandomBracket(SignalEnhancement):
             raise ValueError("signal cannot be None")
         if not isinstance(signal, MerchantSignal):
             raise TypeError(f"signal must be an instance of MerchantSignal, not {type(signal)}")
-        go_for_random = False
-        if params.get("global_dry_run_mode", False):
-            go_for_random = True
-        else:
-            if signal.dry_run():
-                go_for_random = True
-        if go_for_random:
-            self.apply_random_bracket(signal=signal)
-        else:
-            ### don't use random values when money is at-stake
-            if not self.is_set(signal.suggested_stoploss()):
+        go_for_random = params.get("global_dry_run_mode", False) or signal.dry_run()
+        new_stop_loss, new_take_profit = self.random_bracket(signal=signal, brackets=self._BRACKETS)    
+        if not self.is_set(signal.suggested_stoploss()):
+            if go_for_random:
+                signal.flowmerchant["suggested_stoploss"] = new_stop_loss
+            else:
                 raise ValueError(f"setting a stoploss is required when using real money! ticker: {signal.ticker()}")
-            if not self.is_set(signal.takeprofit_percent()):
+        if not self.is_set(signal.takeprofit_percent()):
+            if go_for_random:
+                signal.flowmerchant["takeprofit_percent"] = new_take_profit
+            else:
                 raise ValueError(f"setting a takeprofit is required when using real money! ticker: {signal.ticker()}")
         return signal
     

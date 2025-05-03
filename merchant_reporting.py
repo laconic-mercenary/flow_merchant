@@ -8,7 +8,7 @@ from merchant import PositionsCheckResult
 from personas import database, main_author, next_laggard_persona, next_leader_persona, next_loser_persona, next_winner_persona
 from security import order_digest
 from transactions import multiply, calculate_percent_diff, calculate_pnl
-from utils import unix_timestamp_secs, time_from_timestamp, time_utc_as_str, roll_dice_33percent, null_or_empty, consts as utils_consts
+from utils import unix_timestamp_secs, time_from_timestamp, time_utc_as_str, roll_dice_33percent, null_or_empty, days_past_as_str, consts as utils_consts
 
 import logging
 import io
@@ -38,6 +38,14 @@ class cfg:
 
     def REPORTING_IGNORE_DRY_RUN() -> bool:
         enabled = os.environ.get("MERCHANT_REPORTING_IGNORE_DRY_RUN", "false")
+        return enabled.lower() == "true"
+
+    def REPORTING_CHECK_RESULTS_WINNERS_LOSERS() -> bool:
+        enabled = os.environ.get("MERCHANT_REPORTING_CHECK_RESULTS_WINNERS_LOSERS", "true")
+        return enabled.lower() == "true"
+    
+    def REPORTING_CHECK_RESULTS_LEADERS_LAGGARDS() -> bool:
+        enabled = os.environ.get("MERCHANT_REPORTING_CHECK_RESULTS_LEADERS_LAGGARDS", "true")
         return enabled.lower() == "true"
     
     def REPORTING_TIMEFRAMES() -> dict[str, int]:
@@ -228,6 +236,10 @@ class MerchantReporting:
                         Field(
                             name="Broker order ID",
                             value=main_id
+                        ),
+                        Field(
+                            name="Trace ID",
+                            value=order.metadata.id
                         )
                     ]
                 )
@@ -256,14 +268,26 @@ class MerchantReporting:
         
         logging.info(f"merchant_positions_checked() - with the following results: {results.__dict__}")
         
-        if len(results.winners) == 0 and len(results.laggards) == 0 and len(results.leaders) == 0 and len(results.losers) == 0:
+        winners = []
+        losers = []
+        if cfg.REPORTING_CHECK_RESULTS_WINNERS_LOSERS():
+            winners = self._apply_filters(results.winners)
+            losers = self._apply_filters(results.losers)
+        
+        leaders = []
+        laggards = []
+        if cfg.REPORTING_CHECK_RESULTS_LEADERS_LAGGARDS():
+            leaders = self._apply_filters(results.leaders)
+            laggards = self._apply_filters(results.laggards)
+
+        if len(winners) == 0 and len(laggards) == 0 and len(leaders) == 0 and len(losers) == 0:
             logging.info(f"merchant_positions_checked() - no positions to report")
         else:
             self._send_check_result(
-                winners=results.winners, 
-                losers=results.losers, 
-                leaders=results.leaders, 
-                laggards=results.laggards, 
+                winners=winners, 
+                losers=losers, 
+                leaders=leaders, 
+                laggards=laggards, 
                 current_prices=results.current_prices,
                 elapsed_time_ms=results.elapsed_ms
             )
@@ -516,6 +540,7 @@ class MerchantReporting:
             ledger.log(entry=new_entry)
 
     def _embed(self, author:str, author_icon:str, title:str, desc:str, color:int, footer:str, footer_icon:str, thumbnail:str, positions:list, prices:dict) -> Embed:
+        icon_current_price = "\U0001F5E0"
         icon_timestamp = "\U0001F55B"
         icon_stop_loss = "\U0001F6D1"
         icon_take_profit = "\U0001F3C6"
@@ -578,13 +603,16 @@ class MerchantReporting:
             
             order_sell_id = order_digest(order=order)
             order_friendly_timestamp = time_from_timestamp(order.metadata.time_created / 1000.0)
+            days_past = days_past_as_str(seconds=unix_timestamp_secs() - order.metadata.time_created / 1000.0)
+            order_friendly_timestamp = f"{order_friendly_timestamp} UTC ({days_past} ago)"
             ### TODO - hardcoded url and also securityType
             sell_now_link = f"[~SELL NOW~](https://stockton-jpe01-flow-merchant.azurewebsites.net/api/command/sell/{order_sell_id}?securityType=crypto)"
 
             real_world_order_icon = f"{icon_real_order}" if not dry_run_order else ""
 
-            payload = f"PRICE @ {current_price} ({sell_now_per_diff}%) - {sell_now_msg}"
-            payload += f"\n{icon_timestamp} _*{order_friendly_timestamp}*_ UTC"
+            payload = f"TRACE ID: {order.metadata.id}"
+            payload += f"\n{icon_current_price} {current_price} ({sell_now_per_diff}%) - {sell_now_msg}"
+            payload += f"\n{icon_timestamp} _*{order_friendly_timestamp}*_"
             payload += f"\n{icon_entry} @ {main_price} x {main_contracts} = {main_total}"
             payload += f"\n{icon_stop_loss} @ {stop_price} ({stop_price_per_diff}%) for {potential_loss}"
             payload += f"\n{icon_take_profit} @ {take_profit_price} ({take_profit_per_diff}%) for {potential_profit}"
@@ -613,11 +641,6 @@ class MerchantReporting:
     
     def _send_check_result(self, winners:list, losers:list, leaders:list, laggards:list, current_prices:dict, elapsed_time_ms:int):
         embeds = []
-
-        winners = self._apply_filters(orders=winners)
-        losers = self._apply_filters(orders=losers)
-        leaders = self._apply_filters(orders=leaders)
-        laggards = self._apply_filters(orders=laggards)
 
         winners_ct = len(winners)
         losers_ct = len(losers)
