@@ -155,7 +155,7 @@ class TableLedger(Ledger):
             )
         return deleted_entities
     
-    def get_entries(self, name:str, from_timestamp:int, to_timestamp:int = unix_timestamp_secs(), include_tests:bool=True) -> list[Entry]:
+    def get_entries(self, name:str, from_timestamp:int, to_timestamp:int = unix_timestamp_secs(), include_tests:bool=True, filters:dict = {}) -> list[Entry]:
         if from_timestamp is None:
             raise ValueError("from_timestamp is required")
         if to_timestamp is None:
@@ -175,8 +175,27 @@ class TableLedger(Ledger):
         logging.info(f"ledger query: {query_filter}")
         entites = self.table_client.query_entities(query_filter)
         results = [self._entry_from_entity(raw_entity=entity) for entity in list(entites)]
+        results = self._apply_filters(entries=results, filters=filters)
         results.sort(key=lambda x: x.timestamp, reverse=False)
         return results
+    
+    def _apply_filters(self, entries:list[Entry], filters:dict) -> list[Entry]:
+        new_entries = []
+        for entry in entries:
+            if self._apply_filter(entry_data=entry.data, filters=filters):
+                new_entries.append(entry)
+        return new_entries
+    
+    def _apply_filter(self, entry_data:dict, filters:dict) -> bool:
+        for filter_property, filter_value in filters.items():
+            if filter_property in entry_data:
+                if isinstance(filter_value, dict):
+                    if not self._apply_filter(entry_data=entry_data[filter_property], filters=filter_value):
+                        return False
+                else:
+                    if entry_data[filter_property] != filter_value:
+                        return False
+        return True
     
     def _patch_missing_strategy(self, entry_data:dict) -> bool:
         if not isinstance(entry_data["data"], str):
@@ -258,5 +277,98 @@ if __name__ == "__main__":
             mock_table_client.query_entities.return_value = [result_1, result_2]
             result = l.verify_integrity(signer=hash_signer)
             assert len(result) == 0
+
+        def test_apply_filters(self):
+            entries = [
+                Entry(
+                    name="name1",
+                    amount=0.01,
+                    hash="hash1",
+                    timestamp=unix_timestamp_secs(),
+                    data={
+                        "merchant_params": {
+                            "low_interval": "5",
+                            "high_interval": "60"
+                        },
+                        "tag": "tag1",
+                        "list": ["a", "b"]
+                    }
+                ),                
+                Entry(
+                    name="name2",
+                    amount=0.02,
+                    hash="hash2",
+                    timestamp=unix_timestamp_secs(),
+                    data={
+                        "merchant_params": {
+                            "low_interval": "5",
+                            "high_interval": "15"
+                        },
+                        "tag": "tag2",
+                        "list": ["a", "b"]
+                    }
+                )
+            ]
             
+            mock_table_client = unittest.mock.Mock()
+            table_leder = TableLedger(table_client=mock_table_client)
+            results = table_leder._apply_filters(entries=entries, filters={
+                "merchant_params": {
+                    "low_interval": "5",
+                    "high_interval": "15"
+                }
+            })
+            self.assertEqual(len(results), 1)
+            result = results[0]
+            self.assertEqual(result.hash, entries[1].hash)
+
+            results = table_leder._apply_filters(entries=entries, filters={
+                "merchant_params": {
+                    "low_interval": "5",
+                    "high_interval": "60"
+                }
+            })
+            self.assertEqual(len(results), 1)
+            result = results[0]
+            self.assertEqual(result.hash, entries[0].hash)
+            
+            results = table_leder._apply_filters(entries=entries, filters={
+                "merchant_params": {
+                    "high_interval": "60"
+                }
+            })
+            self.assertEqual(len(results), 1)
+            result = results[0]
+            self.assertEqual(result.hash, entries[0].hash)
+
+            results = table_leder._apply_filters(entries=entries, filters={
+                "merchant_params": {
+                    "low_interval": "5",
+                    "high_interval": "30"
+                }
+            })
+            self.assertEqual(len(results), 0)
+            
+            results = table_leder._apply_filters(entries=entries, filters={
+                "merchant_params": {
+                    "low_interval": "5",
+                    "high_interval": "15"
+                },
+                "tag": "tag1"
+            })
+            self.assertEqual(len(results), 0)
+            
+            results = table_leder._apply_filters(entries=entries, filters={
+                "merchant_params": {
+                    "low_interval": "5",
+                    "high_interval": "15"
+                },
+                "tag": "tag2"
+            })
+            self.assertEqual(len(results), 1)
+            result = results[0]
+            self.assertEqual(result.hash, entries[1].hash)
+
+            
+
     unittest.main()

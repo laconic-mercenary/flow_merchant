@@ -85,6 +85,32 @@ class Analytics:
             if key not in self.data:
                 self.data[key] = Analytics.IntervalPerformance(high_interval=hi, low_interval=lo)
             return self.data[key]
+        
+    @staticmethod
+    def all_performance_metrics(ledger_entries:list[Entry]) -> dict:
+            interval_analytics = Analytics.Intervals()
+            spread_analytics = Analytics.Spreads()
+            ticker_analytics = Analytics.Tickers()
+            overall = Analytics.Overall()
+
+            for ledger_entry in ledger_entries:
+                interval_analytics.add(ledger_entry=ledger_entry)
+                spread_analytics.add(ledger_entry=ledger_entry)
+                ticker_analytics.add(ledger_entry=ledger_entry)
+                overall.add(ledger_entry=ledger_entry)
+            
+            overall_results = [result.__dict__ for result in overall.results()]
+            interval_results = [interval.__dict__ for interval in interval_analytics.results()]
+            spread_results = [spread.__dict__ for spread in spread_analytics.results()]
+            ticker_results = [ticker.__dict__ for ticker in ticker_analytics.results()]
+            
+            return {
+                "overall": overall_results,
+                "intervals": interval_results,
+                "spreads": spread_results,
+                "tickers": ticker_results
+            }
+
 
 if __name__ == "__main__":
     import unittest

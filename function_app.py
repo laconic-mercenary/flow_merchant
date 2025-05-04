@@ -6,6 +6,7 @@ import azure.functions as func
 from azure.data.tables import TableServiceClient
 
 from broker_repository import BrokerRepository
+from ledger_analytics import Analytics
 from merchant_signal import MerchantSignal
 from merchant_order import Order
 from merchant import Merchant, PositionsCheckResult
@@ -17,58 +18,113 @@ from utils import null_or_empty, time_utc_as_str, unix_timestamp_secs, roll_dice
 app = func.FunctionApp()        
 
 ###
-# /test
+# /performance
 ###
 
-@app.route(route="test/{identifier}/{hours}",
+@app.route(route="performance/{hours}/{query}/{identifier}",
            methods=["GET"],
            auth_level=func.AuthLevel.ANONYMOUS)
-def test(req: func.HttpRequest) -> func.HttpResponse:
+def performance(req: func.HttpRequest) -> func.HttpResponse:
     logging.info("test() - invoked")
     if "identifier" not in req.route_params:
         return rx_bad_request("identifier is required")
     if "hours" not in req.route_params:
         return rx_bad_request("hours is required")
+    
     identifier:str = req.route_params.get("identifier")
+    query:str = req.route_params.get("query")
     hours:int = int(req.route_params.get("hours"))
+
+    query = query.strip().upper()
     identifier = identifier.strip().upper()
-    if not identifier.isalpha():
-        return rx_bad_request("identifier must be alphabetic")
+    try:
+        return handle_performance_metrics(
+                    hours=hours, 
+                    query=query, 
+                    identifier=identifier
+                )
+    except Exception as e:
+        logging.error("error in handling performance request", exc_info=True)
+        report_problem(msg="error in handling performance request", exc=e)
+        return rx_not_found()
+
+def handle_performance_metrics(hours:int, query:str, identifier:str) -> func.HttpResponse:
+    if query == "TICKER": 
+        if not identifier.isalpha():
+            logging.warning("identifier not alphabetic")
+            return rx_bad_request()
+    elif query == "SPREAD":
+        if "-" not in identifier:
+            logging.warning("identifier does not contain '-'")
+            return rx_bad_request()
+    elif query == "INTERVAL":
+        if not identifier.isnumeric():
+            logging.warning("identifier not numeric")
+            return rx_bad_request()
+    elif query == "ALL":
+        ### ignore the identifier if querying for all
+        identifier = "ALL"
+    else:
+        logging.warning(f"invalid query: {query}")
+        return rx_bad_request()
+    
+    if len(identifier) > 25:
+        logging.warning("identifier too long")
+        return rx_bad_request()
+    if identifier == "ALL":
+        logging.warning(f"identifier is 'all' - will query all assets for hours {hours}")
+        identifier = None
     if hours <= 0:
-        return rx_bad_request("hours must be greater than 0")
-    if hours > 99999:
-        return rx_bad_request("hours must be less than 99999")
+        logging.warning("hours <= 0")
+        return rx_bad_request()
+    if util_consts.ONE_HOUR_IN_SECS(hours=hours) > util_consts.ONE_WEEK_IN_SECS(weeks=1):
+        logging.warning(f"hours too high: {hours}")
+        return rx_bad_request()
+    
     with connect_table_service() as table_service:        
         table_name = "fmorderledger"
         table_client = table_service.create_table_if_not_exists(table_name=table_name)
         table_ledger = TableLedger(table_client=table_client)
-        report_hours = hours
         now_ts = unix_timestamp_secs()
-        from_ts = now_ts - util_consts.ONE_HOUR_IN_SECS(hours=report_hours)
+        from_ts = now_ts - util_consts.ONE_HOUR_IN_SECS(hours=hours)
+
+        filters = {}
+        if query == "INTERVAL":
+            interval = int(identifier)
+            filters.update({
+                "merchant_params": {
+                    "high_interval": str(interval)
+                }
+            })
+            identifier = None
+        elif query == "SPREAD":
+            take_profit, stop_loss = parse_spread(identifier=identifier)
+            filters.update({
+                "merchant_params": {
+                    "stoploss_percent": float(stop_loss),
+                    "takeprofit_percent": float(take_profit)
+                }
+            })
+            identifier = None
+
         entries = table_ledger.get_entries(
                         name=identifier,
                         from_timestamp=from_ts,
-                        to_timestamp=now_ts
+                        to_timestamp=now_ts,
+                        filters=filters
                     )
         entries.sort(key=lambda x: x.timestamp)
-        MerchantReporting().report_performance_for_entries(
-                                ledger_entries=entries,
-                                title=f"{identifier} - {report_hours} hours"
-                            )
-    win_ct = 0
-    for x in entries: 
-        if x.amount > 0.0: 
-            win_ct += 1
-    win_rate = win_ct / len(entries) if len(entries) > 0 else 0.0
-    return rx_json({
-        "identifier": identifier,
-        "hours": hours,
-        "count": len(entries),
-        "profit": sum([x.amount for x in entries]),
-        "win_rate": win_rate,
-        "first": Order.from_dict(entries[0].data).__dict__ if len(entries) > 0 else "none",
-        "last": Order.from_dict(entries[-1].data).__dict__ if len(entries) > 0 else "none",
-    })
+        metrics = Analytics.all_performance_metrics(ledger_entries=entries)
+        return rx_json(metrics)
+    
+def parse_spread(identifier:str) -> tuple[str, str]:
+    ### format is {high}-{low}
+    split_results = identifier.split("-")
+    if len(split_results) != 2:
+        raise ValueError(f"invalid spread identifier: {identifier}")
+    high = split_results[0]
+    low = split_results[1]
+    return high, low
 
 ###
 # /positions
@@ -170,13 +226,6 @@ def command(req: func.HttpRequest) -> func.HttpResponse:
         report_problem(msg=f"error handling cmd", exc=e)
     return rx_bad_request()
 
-###
-# support
-###
-
-def connect_table_service() -> TableServiceClient:
-    return TableServiceClient.from_connection_string(os.environ["storageAccountConnectionString"])
-
 def handle_instruction_for_command(command:str, identifier:str) -> func.HttpResponse:
     logging.info(f"received command: command={command}, identifier={identifier}")
     if command == "sell":
@@ -185,6 +234,14 @@ def handle_instruction_for_command(command:str, identifier:str) -> func.HttpResp
         return handle_command_for_report_performance(identifer=identifier)
     logging.warning(f"unknown command {command} - ignoring")
     return rx_bad_request()
+
+
+###
+# support
+###
+
+def connect_table_service() -> TableServiceClient:
+    return TableServiceClient.from_connection_string(os.environ["storageAccountConnectionString"])
 
 def handle_command_for_sell(identifier:str) -> func.HttpResponse:
     broker_repo = BrokerRepository()
@@ -208,7 +265,7 @@ def handle_command_for_sell(identifier:str) -> func.HttpResponse:
             "result": "OK",
             "timestamp": time_utc_as_str()
         })
-    
+
 def handle_command_for_report_performance(identifer:str) -> func.HttpResponse:
     identifer = identifer.strip()
     if len(identifer) > 50:

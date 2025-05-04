@@ -49,6 +49,6 @@ class Ledger(ABC):
         pass
 
     @abstractmethod
-    def get_entries(self, name:str, from_timestamp:int, to_timestamp:int, include_tests:bool) -> list[Entry]:
+    def get_entries(self, name:str, from_timestamp:int, to_timestamp:int, include_tests:bool, filters:dict = {}) -> list[Entry]:
         pass
 
