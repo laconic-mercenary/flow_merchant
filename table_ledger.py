@@ -144,8 +144,8 @@ class TableLedger(Ledger):
 
     def purge_old_logs(self) -> list:
         now = unix_timestamp_secs()
-        one_year_old_ts = now - util_consts.ONE_YEAR_IN_SECS()
-        query_filter = f"log_timestamp lt {one_year_old_ts}"
+        age = now - util_consts.ONE_MONTH_IN_SECS()
+        query_filter = f"log_timestamp lt {age}"
         deleted_entities = self.table_client.query_entities(query_filter)
         deleted_entities = list(deleted_entities)
         for entity in deleted_entities:

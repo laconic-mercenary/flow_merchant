@@ -13,9 +13,44 @@ from merchant import Merchant, PositionsCheckResult
 from merchant_reporting import MerchantReporting
 from server import *
 from table_ledger import TableLedger, HashSigner
-from utils import null_or_empty, time_utc_as_str, unix_timestamp_secs, roll_dice_5percent as roll_dice, consts as util_consts
+from utils import null_or_empty, days_past_as_str, time_utc_as_str, unix_timestamp_secs, roll_dice_5percent as roll_dice, consts as util_consts
 
 app = func.FunctionApp()        
+
+###
+# /status
+###
+
+@app.route(route="status",
+           methods=["GET"],
+           auth_level=func.AuthLevel.ANONYMOUS)
+def status(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        return handle_status()
+    except Exception as e:
+        logging.error("error in handling status request", exc_info=True)
+        return rx_not_found()
+
+def handle_status() -> func.HttpResponse:
+    with connect_table_service() as table_service:        
+        table_name = "flowmerchant"
+        table = table_service.get_table_client(table_name)
+        entities = list(table.list_entities())
+        formatted_entities = []
+        now = unix_timestamp_secs()
+        for entity in entities:
+            time_ago = now - int(entity.get("last_action_time"))
+            time_ago = days_past_as_str(seconds=time_ago)
+            formatted_entities.append(
+                {
+                    "id": entity.get("merchant_id"), 
+                    "status": entity.get("status"), 
+                    "last_time": time_ago
+                } 
+            )
+        return rx_json(data=formatted_entities)
+        
+    
 
 ###
 # /performance
@@ -337,6 +372,10 @@ def report_problem(msg:str, exc:Exception, additional_data:dict = {}) -> None:
         logging.error(f"error reporting problem - {e} -- NOTE the original error was {exc}", exc_info=True)
         MerchantReporting().report_problem(msg=f"Error in reporting problem. Original error was {exc}")
 
+###
+# Subscribed Events
+###
+
 def merchant_state_changed(merchant_id: str, status: str, state: dict) -> None:
     try:
         MerchantReporting().report_state_changed(merchant_id=merchant_id, status=status, state=state)
@@ -362,19 +401,44 @@ def merchant_positions_checked(results: PositionsCheckResult) -> None:
     reporting = MerchantReporting()
     try:
         reporting.report_check_results(results=results)
+        open_positions = results.leaders + results.laggards
         closed_positions = results.winners + results.losers
         logging.info(f"reporting to ledger, the following closed positions: {closed_positions}")
         with connect_table_service() as table_service:
-            table_name = "fmorderledger"
-            table_client = table_service.create_table_if_not_exists(table_name=table_name)
-            table_ledger = TableLedger(table_client=table_client)
-            table_signer = HashSigner()
-            
-            reporting.report_to_ledger(positions=closed_positions, ledger=table_ledger, signer=table_signer)
+            ## log the finalized transactions
+            transaction_table_name = "fmorderledger"
+            transaction_table_client = table_service.create_table_if_not_exists(table_name=transaction_table_name)
+            transaction_ledger = TableLedger(table_client=transaction_table_client)
+            transaction_signer = HashSigner()
+    
+            reporting.report_to_ledger(
+                positions=closed_positions, 
+                ledger=transaction_ledger, 
+                signer=transaction_signer
+            )
             
             ## only trigger a performance report occassionally due to it's processurally expensive nature
             if roll_dice():
-                reporting.report_ledger_performance(ledger=table_ledger, signer=table_signer)
+                reporting.report_ledger_performance(ledger=transaction_ledger, signer=transaction_signer)
+    
+            ## log the prices for analytics purposes
+            performance_table_name = "fmperformanceledger"
+            performance_table_client = table_service.create_table_if_not_exists(table_name=performance_table_name)
+            performance_ledger = TableLedger(table_client=performance_table_client)
+            performance_signer = HashSigner()
+
+            reporting.report_to_ledger(
+                positions=open_positions, 
+                ledger=performance_ledger, 
+                signer=performance_signer,
+                current_prices=results.current_prices
+            )
+            if roll_dice():
+                performance_ledger.purge_old_logs()
+                bad_emtries = performance_ledger.verify_integrity(signer=performance_signer)
+                if len(bad_emtries) > 0:
+                    logging.critical(f"performance ledger integrity check failed with {len(bad_emtries)} problems")
+
     except Exception as e:
         logging.error(f"error writing ledger - {e}", exc_info=True)
         report_problem(msg=f"error writing ledger", exc=e)

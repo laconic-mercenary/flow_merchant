@@ -508,7 +508,7 @@ class MerchantReporting:
                     )
         return self._embed_from_ledger_entries(entries=entries, title=title)
 
-    def report_to_ledger(self, positions:list[dict], ledger:Ledger, signer:Signer) -> None:
+    def report_to_ledger(self, positions:list[dict], ledger:Ledger, signer:Signer, current_prices:dict = {}) -> None:
         if ledger is None:
             raise ValueError("ledger is None")
         if signer is None:
@@ -517,15 +517,30 @@ class MerchantReporting:
             raise ValueError("positions is None")
         for position in positions:
             order = Order.from_dict(position)
-            
-            pnl_dict = calculate_pnl(
-                contracts=order.results.transaction.quantity,
-                main_price=order.sub_orders.main_order.price,
-                current_price=order.results.transaction.price,
-                stop_price=0.0,
-                profit_price=0.0
-            )
-            amount = pnl_dict.get("current_without_fees")
+
+            ###
+            # TODO: there is a difference in meaning for "amount" if the order is finalized
+            # or not. If the order is completed, then the amount of loss or profit is 
+            # what is stored in amount. If it is not complete, then it is simply the current 
+            # price. The only reason to do this is that current price is more useful for analytics
+            # -- consider using the original approach instead.
+            amount:float = None
+            timestamp:int = None
+            if order.results.complete:    
+                pnl_dict = calculate_pnl(
+                    contracts=order.results.transaction.quantity,
+                    main_price=order.sub_orders.main_order.price,
+                    current_price=order.results.transaction.price,
+                    stop_price=0.0,
+                    profit_price=0.0
+                )
+                amount = pnl_dict.get("current_without_fees")
+                timestamp = unix_timestamp_secs()
+            else:
+                if order.ticker not in current_prices:
+                    raise ValueError(f"Current price not found for {order.ticker}")
+                amount = current_prices.get(order.ticker)
+                timestamp = unix_timestamp_secs()
 
             last_entry = ledger.get_latest_entry()
             new_entry = Entry(
@@ -533,7 +548,7 @@ class MerchantReporting:
                 amount=amount,
                 hash=None,
                 test=order.metadata.is_dry_run,
-                timestamp=unix_timestamp_secs(),
+                timestamp=timestamp,
                 data=order.__dict__
             )
             new_entry.hash = signer.sign(new_entry=new_entry, prev_entry=last_entry)
@@ -751,6 +766,10 @@ class MerchantReporting:
         out = io.StringIO()
         traceback.print_exception(ex, file=out)
         return out.getvalue().strip()
+    
+    ###
+    # 
+    ###
     
 if __name__ == "__main__":
     import unittest
