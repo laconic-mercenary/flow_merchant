@@ -9,7 +9,6 @@ from merchant_keys import keys
 from transactions import calculate_stop_loss, calculate_take_profit, calculate_pnl, Transaction, TransactionAction
 from utils import unix_timestamp_ms, pause_thread, null_or_empty
 
-import copy
 import logging
 import typing
 import uuid
@@ -34,11 +33,12 @@ class BracketStrategy(OrderStrategy):
             raise ValueError("signal is required")
         if not isinstance(signal, MerchantSignal):
             raise TypeError(f"signal must be an instance of MerchantSignal, not {type(signal)}")
-        ticker = signal.ticker()
-        contracts = signal.contracts()
-        take_profit_percent = signal.takeprofit_percent()
-        stop_loss_percent = signal.suggested_stoploss()
-        dry_run_mode = merchant_params.get("dry_run", False)
+        
+        ticker:str = signal.ticker()
+        contracts:float = signal.contracts()
+        take_profit_percent:float = signal.takeprofit_percent()
+        stop_loss_percent:float = signal.suggested_stoploss()
+        dry_run_mode:bool = merchant_params.get("dry_run", False)
 
         if null_or_empty(ticker):
             raise ValueError("Ticker is required")
@@ -58,32 +58,22 @@ class BracketStrategy(OrderStrategy):
             if not isinstance(broker, LiveCapable):
                 raise ValueError("Broker is not a LiveCapable")
 
-        execute_market_order = broker.place_market_order_test if dry_run_mode else broker.place_market_order
-        execute_stop_order = None
+        execute_market_order:typing.Callable = broker.place_market_order_test if dry_run_mode else broker.place_market_order
+        execute_stop_order:typing.Callable = None
         if isinstance(broker, StopMarketOrderable):
             execute_stop_order = broker.place_limit_order_test if dry_run_mode else broker.place_limit_order
         
         logging.info(f"placing market order for {contracts} contracts for {ticker}")
-        market_order_rx = execute_market_order(
+        market_order_rx:dict = execute_market_order(
             ticker=ticker,
             contracts=contracts,
             action="BUY"
         )
         
-        market_order_info = broker.standardize_market_order(market_order_rx)
+        market_order_info:dict = broker.standardize_market_order(market_order_rx)
         logging.info(f"broker - market order response: {market_order_rx}")
 
         ## TODO - consider selling here and abandoning the order
-        if keys.bkrdata.order.suborders.props.ID() not in market_order_info:
-            raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.ID()} not found in market order data {market_order_info}")
-
-        ### TODO
-        #if not dry_run_mode:
-        #    market_order_info = broker.get_order(
-        #        ticker=ticker, 
-        #        order_id=market_order_info.get(keys.bkrdata.order.suborders.props.ID())
-        #    )
-        
         if keys.bkrdata.order.suborders.props.ID() not in market_order_info:
             raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.ID()} not found in market order data {market_order_info}")
         if keys.bkrdata.order.suborders.props.PRICE() not in market_order_info:
@@ -91,33 +81,33 @@ class BracketStrategy(OrderStrategy):
         if keys.bkrdata.order.suborders.props.CONTRACTS() not in market_order_info:
             raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.CONTRACTS()} not found in market order data {market_order_info}")
 
-        main_order_price = market_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
-        main_order_contracts = market_order_info.get(keys.bkrdata.order.suborders.props.CONTRACTS())
+        main_order_price:float = market_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
+        main_order_contracts:float = market_order_info.get(keys.bkrdata.order.suborders.props.CONTRACTS())
 
-        stop_loss_price = calculate_stop_loss(
+        stop_loss_price:float = calculate_stop_loss(
             close_price=main_order_price,
             stop_loss_percent=stop_loss_percent
         )
-        take_profit_price = calculate_take_profit(
+        take_profit_price:float = calculate_take_profit(
             close_price=main_order_price,
             take_profit_percent=take_profit_percent
         )
 
-        suborder_main = SubOrder(
+        suborder_main:SubOrder = SubOrder(
             id = market_order_info.get(keys.bkrdata.order.suborders.props.ID()),
             api_rx = market_order_rx,
             time = market_order_info.get("timestamp"),
             price = main_order_price,
             contracts = main_order_contracts
         )
-        suborder_stop = SubOrder(
+        suborder_stop:SubOrder = SubOrder(
             id = f"{suborder_main.id}stop",
             api_rx = {},
             time = suborder_main.time,
             price = stop_loss_price,
             contracts = suborder_main.contracts
         )
-        suborder_profit = SubOrder(
+        suborder_profit:SubOrder = SubOrder(
             id = f"{suborder_main.id}profit",
             api_rx = {},
             time = suborder_main.time,
@@ -127,22 +117,22 @@ class BracketStrategy(OrderStrategy):
 
         if execute_stop_order is not None:
             logging.info(f"placing stop order for {contracts} contracts @ {stop_loss_price} for {ticker}")
-            stop_loss_order_rx = execute_stop_order(
+            stop_loss_order_rx:dict = execute_stop_order(
                 ticker=ticker,
                 action="SELL",
                 contracts=main_order_contracts,
                 limit=stop_loss_price
             )
-            stop_loss_order_info = broker.standardize_limit_order(stop_loss_order_rx)
+            stop_loss_order_info:dict = broker.standardize_limit_order(stop_loss_order_rx)
         
             if keys.bkrdata.order.suborders.props.ID() not in stop_loss_order_info:
                 raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.ID()} not found in stop loss order data {stop_loss_order_info}")
             if keys.bkrdata.order.suborders.props.PRICE() not in stop_loss_order_info:
                 raise ValueError(f"critical key {keys.bkrdata.order.suborders.props.PRICE()} not found in stop loss order data {stop_loss_order_info}")
 
-            stop_loss_order_price = stop_loss_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
+            stop_loss_order_price:float = stop_loss_order_info.get(keys.bkrdata.order.suborders.props.PRICE())
             
-            suborder_stop = SubOrder(
+            suborder_stop:SubOrder = SubOrder(
                 id = suborder_stop.id,
                 api_rx = stop_loss_order_rx,
                 time = stop_loss_order_info.get("timestamp"),
@@ -150,7 +140,7 @@ class BracketStrategy(OrderStrategy):
                 contracts = main_order_contracts
             )
 
-        new_order = Order(
+        new_order:Order = Order(
             results=None,
             projections=None,
             ticker = ticker,
@@ -229,10 +219,13 @@ class BracketStrategy(OrderStrategy):
                             )
             results.complete = True
             results.transaction = sell_result
+            results.additional_data.update({
+                "sell_result": sell_result.__dict__
+            })
             order.results = Results(
                 transaction=sell_result,
                 complete=True,
-                additional_data=copy.deepcopy(results.additional_data)
+                additional_data=results.additional_data.copy()
             )
         return results
 

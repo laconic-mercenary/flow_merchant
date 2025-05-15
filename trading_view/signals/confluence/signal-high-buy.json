@@ -1,0 +1,26 @@
+{
+    "metadata": {
+        "key": "STRING <key - configured in ENV VAR>",
+        "tags": "STRING <comma separated list of report categories that show up in Discord>"
+    },
+    "security" : {
+        "contracts" : "FLOAT - <quantity / amount to buy of the asset>",
+        "ticker" : "{{ticker}}",
+        "interval" : "{{interval}}",
+        "type":"crypto|stocks|forex",
+        "price" : {
+            "close" : "{{close}}"
+        }
+    },
+    "flowmerchant": {
+        "suggested_stoploss" : "FLOAT - <as a percentage of the entry price>, ex: 1.0",
+        "takeprofit_percent" : "FLOAT - <as a percentage of the entry price>, ex: 1.5",
+        "low_interval": "STRING - <some low interval here>",
+        "high_interval": "{{interval}}",
+        "action": "buy",
+        "strategy": "BRACKET|TRAILING_STOP",
+        "broker_params": {
+               "currency_to_contracts": true
+        }
+    }
+}

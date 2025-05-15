@@ -115,6 +115,14 @@ class MerchantReporting:
         ### nothing for now, keep the traffic lean
         if not cfg.REPORTING_SIGNAL_RECEIVED():
             logging.debug("signal received reporting is disabled")
+        msg = f"RX SIGNAL: ticker {signal.ticker()}, interval {signal.interval()}, action {signal.action()}, tags {signal.tags()}, time (UTC) {time_utc_as_str()}"
+        author = main_author(db=database())
+        DiscordClient().send_webhook_message(msg=WebhookMessage(
+            username=author.name,
+            avatar_url=author.avatar_url,
+            content=msg,
+            embeds=[]
+        ))
 
     ###
     # on merchant state change (buying, selling, shopping, etc)
@@ -165,6 +173,8 @@ class MerchantReporting:
         main_order = order.sub_orders.main_order
         stop_loss_order = order.sub_orders.stop_loss
         take_profit_order = order.sub_orders.take_profit
+        high_interval = order.merchant_params.high_interval
+        low_interval = order.merchant_params.low_interval
 
         main_price = main_order.price
         main_contracts = main_order.contracts
@@ -214,6 +224,10 @@ class MerchantReporting:
                             value=ticker
                         ),
                         Field(
+                            name="Intervals",
+                            value=f"{high_interval}-{low_interval}"
+                        ),
+                        Field(
                             name="Time(UTC)",
                             value=time_utc_as_str()
                         ),
@@ -234,7 +248,7 @@ class MerchantReporting:
                             value=f"{take_profit_price} ({take_profit_price_per * 100}%)"
                         ),
                         Field(
-                            name="Broker order ID",
+                            name="Broker Order ID",
                             value=main_id
                         ),
                         Field(
@@ -313,16 +327,6 @@ class MerchantReporting:
             raise TypeError("ledger must be an instance of Ledger")
         if not isinstance(signer, Signer):
             raise TypeError("signer must be an instance of Signer")
-        if roll_dice_33percent():
-            deleted_logs = ledger.purge_old_logs()
-            if len(deleted_logs) != 0:
-                logging.info(f"removed {len(deleted_logs)} expired logs from the ledger: {deleted_logs}")
-            
-            bad_entries = ledger.verify_integrity(signer=signer)
-            if len(bad_entries) != 0:
-                msg = f"bad entries found in ledger: {bad_entries}"
-                logging.critical(msg)
-                self.report_problem(msg=msg, exc=Exception(msg))
                 
         report_timeframes = []
         report_timeframes_dict = cfg.REPORTING_TIMEFRAMES()
@@ -555,7 +559,7 @@ class MerchantReporting:
             ledger.log(entry=new_entry)
 
     def _embed(self, author:str, author_icon:str, title:str, desc:str, color:int, footer:str, footer_icon:str, thumbnail:str, positions:list, prices:dict) -> Embed:
-        icon_current_price = "\U0001F5E0"
+        icon_current_price = "\U000027A1"
         icon_timestamp = "\U0001F55B"
         icon_stop_loss = "\U0001F6D1"
         icon_take_profit = "\U0001F3C6"

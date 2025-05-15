@@ -6,10 +6,10 @@ import azure.functions as func
 from azure.data.tables import TableServiceClient
 
 from broker_repository import BrokerRepository
-from ledger_analytics import Analytics
 from merchant_signal import MerchantSignal
 from merchant_order import Order
 from merchant import Merchant, PositionsCheckResult
+from merchant_performance import MerchantPerformance, LedgerOrdersResult, LedgerTransactionsResult
 from merchant_reporting import MerchantReporting
 from server import *
 from table_ledger import TableLedger, HashSigner
@@ -41,11 +41,13 @@ def handle_status() -> func.HttpResponse:
         for entity in entities:
             time_ago = now - int(entity.get("last_action_time"))
             time_ago = days_past_as_str(seconds=time_ago)
+            order_data = json.loads(entity.get("broker_data"))
             formatted_entities.append(
                 {
                     "id": entity.get("merchant_id"), 
                     "status": entity.get("status"), 
-                    "last_time": time_ago
+                    "last_time": time_ago,
+                    "has_orders": len(order_data) > 0
                 } 
             )
         return rx_json(data=formatted_entities)
@@ -69,21 +71,21 @@ def performance(req: func.HttpRequest) -> func.HttpResponse:
     identifier:str = req.route_params.get("identifier")
     query:str = req.route_params.get("query")
     hours:int = int(req.route_params.get("hours"))
+    ledger_type:str = req.params.get("ledgerType", "TRANSACTIONS")
 
-    query = query.strip().upper()
-    identifier = identifier.strip().upper()
     try:
         return handle_performance_metrics(
                     hours=hours, 
                     query=query, 
-                    identifier=identifier
+                    identifier=identifier,
+                    ledger_type=ledger_type
                 )
     except Exception as e:
         logging.error("error in handling performance request", exc_info=True)
         report_problem(msg="error in handling performance request", exc=e)
         return rx_not_found()
 
-def handle_performance_metrics(hours:int, query:str, identifier:str) -> func.HttpResponse:
+def handle_performance_metrics(hours:int, query:str, identifier:str, ledger_type:str) -> func.HttpResponse:
     if query == "TICKER": 
         if not identifier.isalpha():
             logging.warning("identifier not alphabetic")
@@ -116,8 +118,15 @@ def handle_performance_metrics(hours:int, query:str, identifier:str) -> func.Htt
         logging.warning(f"hours too high: {hours}")
         return rx_bad_request()
     
-    with connect_table_service() as table_service:        
+    if ledger_type == "TRANSACTIONS":
         table_name = "fmorderledger"
+    elif ledger_type == "ORDERS":
+        table_name = "fmperformanceledger"
+    else:
+        logging.warning(f"invalid ledger_type: {ledger_type}")
+        return rx_bad_request()
+    
+    with connect_table_service() as table_service:
         table_client = table_service.create_table_if_not_exists(table_name=table_name)
         table_ledger = TableLedger(table_client=table_client)
         now_ts = unix_timestamp_secs()
@@ -142,15 +151,28 @@ def handle_performance_metrics(hours:int, query:str, identifier:str) -> func.Htt
             })
             identifier = None
 
-        entries = table_ledger.get_entries(
-                        name=identifier,
-                        from_timestamp=from_ts,
-                        to_timestamp=now_ts,
-                        filters=filters
-                    )
-        entries.sort(key=lambda x: x.timestamp)
-        metrics = Analytics.all_performance_metrics(ledger_entries=entries)
-        return rx_json(metrics)
+        filters.update({"name": identifier})
+
+        merchant_performance = MerchantPerformance()
+
+        if ledger_type == "TRANSACTIONS":
+            results:LedgerTransactionsResult = merchant_performance.for_ledger_transactions(
+                ledger=table_ledger,
+                from_timestamp=from_ts,
+                to_timestamp=now_ts,
+                filters=filters
+            )
+            return rx_json(results.as_dict())
+        elif ledger_type == "ORDERS":
+            results:LedgerOrdersResult = merchant_performance.for_ledger_orders(
+                ledger=table_ledger,
+                from_timestamp=from_ts,
+                to_timestamp=now_ts,
+                filters=filters
+            )
+            return rx_json(results.as_dict())
+        else:
+            return rx_bad_request()
     
 def parse_spread(identifier:str) -> tuple[str, str]:
     ### format is {high}-{low}
@@ -420,7 +442,13 @@ def merchant_positions_checked(results: PositionsCheckResult) -> None:
             ## only trigger a performance report occassionally due to it's processurally expensive nature
             if roll_dice():
                 reporting.report_ledger_performance(ledger=transaction_ledger, signer=transaction_signer)
-    
+                purged = transaction_ledger.purge_old_logs()
+                logging.info(f"purged {purged} old logs from {transaction_table_name}")
+                bad_emtries = transaction_ledger.verify_integrity(signer=transaction_signer)
+                if len(bad_emtries) > 0:
+                    logging.critical(f"transaction ledger integrity check failed with {len(bad_emtries)} problems")
+
+
             ## log the prices for analytics purposes
             performance_table_name = "fmperformanceledger"
             performance_table_client = table_service.create_table_if_not_exists(table_name=performance_table_name)
@@ -428,13 +456,15 @@ def merchant_positions_checked(results: PositionsCheckResult) -> None:
             performance_signer = HashSigner()
 
             reporting.report_to_ledger(
-                positions=open_positions, 
+                positions=open_positions + closed_positions, 
                 ledger=performance_ledger, 
                 signer=performance_signer,
                 current_prices=results.current_prices
             )
+
             if roll_dice():
-                performance_ledger.purge_old_logs()
+                purged = performance_ledger.purge_old_logs()
+                logging.info(f"purged {purged} old logs from {performance_table_name}")
                 bad_emtries = performance_ledger.verify_integrity(signer=performance_signer)
                 if len(bad_emtries) > 0:
                     logging.critical(f"performance ledger integrity check failed with {len(bad_emtries)} problems")

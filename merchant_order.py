@@ -1,6 +1,6 @@
 from order_strategies import OrderStrategies, strategy_enum_from_str
 from security_types import SecurityTypes, security_type_from_str
-from transactions import Transaction
+from transactions import Transaction, TransactionAction
 from utils import null_or_empty
 
 import json
@@ -126,10 +126,11 @@ class Results(dict):
             complete=complete,
             additional_data=additional_data
         )
-        #if transaction is None:
-        #    raise ValueError(f"Results transaction is None")
-        #if not isinstance(transaction, Transaction):
-        #    raise ValueError(f"Results transaction is not a Transaction")
+        if transaction is not None:
+            if not isinstance(transaction, Transaction):
+                raise ValueError(f"Results transaction is not a Transaction, got {transaction}")
+        if additional_data is None:
+            additional_data = {}
         self.transaction = transaction
         self.complete = complete
         self.additional_data = additional_data
@@ -139,6 +140,7 @@ class Results(dict):
             return False
         equals = self.transaction == value.transaction
         equals = equals and self.complete == value.complete
+        equals = equals and self.additional_data == value.additional_data
         return equals
 
 class MerchantParams(dict):
@@ -311,8 +313,22 @@ class Order(dict):
             profit_without_fees=order_dict["projections"]["profit_without_fees"],
             loss_without_fees=order_dict["projections"]["loss_without_fees"],
         )
+        transaction = None
+        if order_dict["results"]["transaction"] is not None:
+            action = None
+            if order_dict["results"]["transaction"]["action"] == TransactionAction.BUY.name:
+                action = TransactionAction.BUY
+            elif order_dict["results"]["transaction"]["action"] == TransactionAction.SELL.name:
+                action = TransactionAction.SELL
+            else:
+                raise ValueError("invalid transaction action")
+            transaction = Transaction(
+                action=action,
+                quantity=order_dict["results"]["transaction"]["quantity"],
+                price=order_dict["results"]["transaction"]["price"]
+            )
         results = Results(
-            transaction=order_dict["results"]["transaction"],
+            transaction=transaction,
             complete=order_dict["results"]["complete"],
             additional_data=order_dict["results"]["additional_data"] if "additional_data" in order_dict["results"] else {}
         )
@@ -330,6 +346,7 @@ class Order(dict):
         return json_dict[key] if key in json_dict else None
 
 if __name__ == "__main__":
+
     import unittest
 
     class TestOrder(unittest.TestCase):

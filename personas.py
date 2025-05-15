@@ -16,8 +16,8 @@ def database() -> Database:
     return Database(
         author=Persona(
             name="Flow Merchant Bot",
-            avatar_url="https://i.imgur.com/xZpIYpS.png",
-            portrait_url="https://i.imgur.com/xZpIYpS.png",
+            avatar_url="https://i.imgur.com/tTSigdp.png",
+            portrait_url="https://i.imgur.com/tTSigdp.png",
             quote="Follow the flow",
             advice="Follow the flow"
         ),
@@ -67,9 +67,23 @@ def database() -> Database:
                 portrait_url="https://i.imgur.com/EV9iNwo.jpeg",
                 quote="May I borrow some of your time?",
                 advice="Sell these, or I'll get closer..."
+            ),
+            Persona(
+                name="K'",
+                avatar_url="https://i.imgur.com/voQ6457.jpeg",
+                portrait_url="https://i.imgur.com/voQ6457.jpeg",
+                quote="you serious?",
+                advice="waste of time"
             )
         ],
         losers=[
+            Persona(
+                name="DoomGuy",
+                avatar_url="https://i.imgur.com/ZMEhdSE.jpeg",
+                portrait_url="https://i.imgur.com/ZMEhdSE.jpeg",
+                quote="...",
+                advice="..."
+            ),
             Persona(
                 name="Indy Jones",
                 avatar_url="https://i.imgur.com/N0fjihY.jpeg",

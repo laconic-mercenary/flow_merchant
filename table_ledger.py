@@ -10,6 +10,7 @@ from azure.data.tables import TableClient
 
 import json
 import logging
+import os
 import uuid
 
 class consts:
@@ -21,6 +22,17 @@ class consts:
     def AMOUNT_TRUNCATION() -> int:
         return 10
     
+class cfg:
+    @staticmethod
+    def ENTRY_RETENTION_DAYS() -> int:
+        days_retention:str = os.environ.get("TABLE_LEDGER_ENTRY_RETENTION_DAYS", "30")
+        if not days_retention.isnumeric():
+            raise ValueError(f"TABLE_LEDGER_ENTRY_RETENTION_DAYS must be an integer, got {days_retention}")
+        days_retention = int(days_retention)
+        if days_retention > 365:
+            raise ValueError(f"TABLE_LEDGER_ENTRY_RETENTION_DAYS must be less than 365, got {days_retention}")
+        return days_retention
+
 class HashSigner(Signer):
     def sign(self, new_entry:Entry, prev_entry:Entry) -> str:
         if new_entry is None:
@@ -144,7 +156,10 @@ class TableLedger(Ledger):
 
     def purge_old_logs(self) -> list:
         now = unix_timestamp_secs()
-        age = now - util_consts.ONE_MONTH_IN_SECS()
+        retention_period_secs = util_consts.ONE_DAY_IN_SECS(days=cfg.ENTRY_RETENTION_DAYS())
+        age = now - retention_period_secs
+        ### TODO - put a limit on the amount returned to prevent long processing
+        ### apply it at the query level
         query_filter = f"log_timestamp lt {age}"
         deleted_entities = self.table_client.query_entities(query_filter)
         deleted_entities = list(deleted_entities)

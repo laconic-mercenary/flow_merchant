@@ -136,13 +136,18 @@ class Merchant:
                         dry_run_mode=order.metadata.is_dry_run
                     )
         
+        addtl_data = {
+            "notes": "manually sold",
+            "timestamp": unix_timestamp_secs()
+        }
+        if order.results is not None:
+            if order.results.additional_data is not None:
+                addtl_data.update(order.results.additional_data)
+        
         order.results = Results(
                 transaction=transaction,
                 complete=True,
-                additional_data={
-                    "notes": "manually sold",
-                    "timestamp": unix_timestamp_secs()
-                }
+                additional_data=addtl_data.copy()
             )
         
         order_copy = order.as_copy()
@@ -155,67 +160,6 @@ class Merchant:
                 order=order_copy, 
                 sell_result=sell_result
             )
-        return sell_result
-
-    def _broker_sell_order(self, order: Order) -> SellResult:
-        ### TODO - deprecated, use _sell_order instead
-        logging.debug(f"_broker_sell_order()")
-        if not isinstance(self.broker, MarketOrderable):
-            raise ValueError("Broker must be MarketOrderable")
-        execute_market_order = self.broker.place_market_order
-        standardize_market_order = self.broker.standardize_market_order
-
-        if order.metadata.is_dry_run:
-            if not isinstance(self.broker, DryRunnable):
-                raise ValueError("Broker must be DryRunnable")
-            execute_market_order = self.broker.place_market_order_test
-
-        additional_data = {}
-        if isinstance(self.broker, StopMarketOrderable):
-            if not isinstance(self.broker, OrderCancelable):
-                raise ValueError("Broker must be OrderCancelable")
-            cancel_result = self.broker.cancel_order(
-                ticker=order.ticker, 
-                order_id=order.sub_orders.stop_loss.id
-            )
-            additional_data.update({"cancel_result": cancel_result})
-        
-        sell_result_api = execute_market_order(
-                                ticker=order.ticker,
-                                action="SELL",
-                                contracts=order.sub_orders.main_order.contracts
-                            )
-        sell_result_dict = standardize_market_order(market_order_result=sell_result_api)
-        
-        logging.info(f"Sold order {order}, with result {sell_result_api}")
-        additional_data.update({
-            "_market_order_sell_result_broker_api": sell_result_api,
-            "market_order_sell_result": sell_result_dict
-        })
-
-        sell_transaction = Transaction(
-                                action=TransactionAction.SELL,
-                                quantity=sell_result_dict.get("contracts"),
-                                price=sell_result_dict.get("price")
-                            )
-
-        order.results = Results(
-                            transaction=sell_transaction,
-                            complete=True,
-                            additional_data=additional_data
-                        )
-        
-        sell_result = SellResult(
-                        order=order,
-                        transaction=sell_transaction,
-                        additional_data=additional_data
-                    )
-        
-        self._notify_of_sell(
-                order=order.as_copy(), 
-                sell_result=sell_result
-            )
-        
         return sell_result
         
     def _notify_of_sell(self, order:Order, sell_result:SellResult) -> PositionsCheckResult:
@@ -497,10 +441,10 @@ class Merchant:
     def _purge_old_positions(self) -> dict:
         table_client =  self.table_service.get_table_client(table_name=self.TABLE_NAME)
         all_positions = list(table_client.list_entities())
-        one_year_old_ts = unix_timestamp_secs() - util_consts.ONE_YEAR_IN_SECS()
+        one_month_old_ts = unix_timestamp_secs() - util_consts.ONE_MONTH_IN_SECS()
         for position in all_positions:
             last_action_time = position.get(keys.LAST_ACTION_TIME())
-            if one_year_old_ts > last_action_time:
+            if one_month_old_ts > last_action_time:
                 orders = position.get(keys.BROKER_DATA())
                 orders = json.loads(orders)
                 if len(orders) != 0:
@@ -613,24 +557,25 @@ class Merchant:
             self._start_buying()
             return self._handle_signal_when_buying(signal)
         else:
-            if signal.interval() == self.high_interval():
-                if signal.action() == action.BUY():
+            if self._is_high_interval(signal):
+                if self._is_buy_signal(signal):
                     self._start_buying()
                     return True
         return False
 
     def _handle_signal_when_buying(self, signal: MerchantSignal) -> bool:
         logging.debug(f"_handle_signal_when_buying()")
-        if signal.interval() == self.low_interval():
-            if signal.action() == action.BUY():
+        if self._is_low_interval(signal):
+            if self._is_buy_signal(signal):
                 self._handle_orders(signal=signal)
                 if signal.rest_after_buy():
                     self._start_resting()
                 else:
                     self._start_selling()
                 return True
-        elif signal.interval() == self.high_interval():
-            if signal.action() == action.SELL():
+        elif self._is_high_interval(signal):
+            if self._is_sell_signal(signal):
+                logging.warning(f"bullish confluence has ended for {signal.ticker()}")
                 self._start_shopping()
                 return True
         return False
@@ -639,8 +584,13 @@ class Merchant:
         logging.debug(f"_handle_signal_when_selling()")
         #### the selling phase means we have already placed an order and are waiting for 
         #### the results - which is handled by a separate worker ( see check_positions() )
-
-        if signal.action() == action.BUY():    
+        if self._is_sell_signal(signal):
+            if self._is_high_interval(signal):
+                ### our bullish confluence has ended, so stop buying more orders
+                logging.warning(f"bullish confluence has ended for {signal.ticker()}")
+                self._start_shopping()
+                return True
+        elif self._is_buy_signal(signal):
             ## In multi-trade mode, we can have overlapping orders of the same asset for one merchant
             if self.multitrade_mode() or signal.multitrade_mode():
                 self._start_buying()
@@ -663,26 +613,50 @@ class Merchant:
 
     def _handle_signal_when_resting(self, signal: MerchantSignal) -> bool:
         logging.debug(f"_handle_signal_when_resting()")
-        now_timestamp_seconds = unix_timestamp_secs()
-        rest_interval_seconds = self.rest_interval_minutes() * 60
-        if (now_timestamp_seconds > self.last_action_time() + rest_interval_seconds):
+        if self._is_done_resting():
             if self.multitrade_mode() or signal.multitrade_mode():
-                if signal.interval() == self.low_interval():
-                    if signal.action() == action.SELL():
+                if self._is_low_interval(signal):
+                    if self._is_sell_signal(signal):
                         self._start_buying()
                         return True
-                    elif signal.action() == action.BUY():
+                    elif self._is_buy_signal(signal):
                         self._start_buying()
                         return self._handle_signal_when_buying(signal)
-                elif signal.interval() == self.high_interval():
-                    if signal.action() == action.BUY():
+                    else:
+                        raise ValueError(f"unknown signal action: {signal.action()}")
+                elif self._is_high_interval(signal):
+                    if self._is_buy_signal(signal):
                         self._start_buying()
                         return True
             self._start_shopping()
+        return True
+    
+    def _is_done_resting(self) -> bool:
+        if self.status() != state.RESTING():
+            raise ValueError(f"expected to be in resting state, but currently: {self.status()}")
+        now_timestamp_seconds = unix_timestamp_secs()
+        rest_interval_seconds = self.rest_interval_minutes() * 60
+        if (now_timestamp_seconds > self.last_action_time() + rest_interval_seconds):
+            return True
         else:
             time_left_in_seconds = (self.last_action_time() + rest_interval_seconds) - now_timestamp_seconds
             logging.info(f"Resting for another {time_left_in_seconds} seconds")
-        return True
+        return False
+
+    def _is_buy_signal(self, signal: MerchantSignal) -> bool:
+        return signal.action() == action.BUY()
+    
+    def _is_sell_signal(self, signal:MerchantSignal) -> bool:
+        return signal.action() == action.SELL()
+    
+    def _is_sell_signal(self, signal: MerchantSignal) -> bool:
+        return self._is_high_interval(signal) and signal.action() == action.SELL()
+    
+    def _is_high_interval(self, signal: MerchantSignal) -> bool:
+        return signal.interval() == self.high_interval()
+    
+    def _is_low_interval(self, signal: MerchantSignal) -> bool:
+        return signal.interval() == self.low_interval()
 
     def _start_buying(self) -> None:
         logging.debug(f"_start_buying()")

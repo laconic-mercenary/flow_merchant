@@ -45,6 +45,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .alerts
+.test_events
 
 # Azurite artifacts
 __blobstorage__

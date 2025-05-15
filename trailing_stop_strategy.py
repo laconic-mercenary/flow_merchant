@@ -7,7 +7,7 @@ from live_capable import LiveCapable
 from merchant_keys import keys as mkeys
 from merchant_order import Order, SubOrders, SubOrder, Projections, Results
 from merchant_signal import MerchantSignal
-from transactions import calculate_pnl
+from transactions import calculate_pnl, Transaction, TransactionAction
 from utils import unix_timestamp_secs, unix_timestamp_ms
 
 import logging
@@ -24,9 +24,13 @@ class TrailingStopStrategy(BracketStrategy):
         return HandleResult(target_order=order, complete=False)
 
     def handle_take_profit(self, broker:Broker, order:Order, merchant_params:dict = {}) -> HandleResult:
-        ticker = order.ticker
-        current_price = merchant_params.get("current_price")
-        dry_run_mode = merchant_params.get("dry_run_order")
+        if "current_price" not in merchant_params:
+            raise ValueError(f"current_price not found in merchant_params, got {merchant_params}")
+        if "dry_run_order" not in merchant_params:
+            raise ValueError(f"dry_run_order not found in merchant_params, got {merchant_params}")
+        ticker:str = order.ticker
+        current_price:float = merchant_params.get("current_price")
+        dry_run_mode:bool = merchant_params.get("dry_run_order")
 
         new_stop_loss, new_take_profit = self._determine_new_levels(
                                             current_price=current_price,
@@ -35,18 +39,36 @@ class TrailingStopStrategy(BracketStrategy):
         
         logging.info(f"creating new trailing stop: ticker={ticker}, old_stop_loss={order.sub_orders.stop_loss.price}, old_take_profit={order.sub_orders.take_profit.price} new_stop_loss={new_stop_loss}, new_take_profit={new_take_profit}")
 
-        results = self._handle_orders(
-                        broker=broker, 
-                        ticker=ticker, 
-                        sell_contracts=0.0, 
-                        new_stop_loss=new_stop_loss, 
-                        new_take_profit=new_take_profit, 
-                        order=order,
-                        dry_run_mode=dry_run_mode
-                    )
+        order_results:HandleResult = self._handle_orders(
+                                        broker=broker, 
+                                        ticker=ticker, 
+                                        sell_contracts=0.0, 
+                                        new_stop_loss=new_stop_loss, 
+                                        new_take_profit=new_take_profit, 
+                                        order=order,
+                                        dry_run_mode=dry_run_mode
+                                    )
         
-        if results.complete:
-            return results
+        if order_results.complete:
+            order.results = Results(
+                complete=True,
+                transaction=order_results.transaction,
+                additional_data=order_results.additional_data.copy()
+            )
+            return order_results
+        
+        now_ts:int = unix_timestamp_secs()
+        trailing_update_data:dict = {
+            f"trail_updated_at_{now_ts}": {
+                "timestamp": now_ts,
+                "current_price": current_price,
+                "old_stop_loss": order.sub_orders.stop_loss.price,
+                "new_stop_loss": new_stop_loss,
+                "old_take_profit": order.sub_orders.take_profit.price,
+                "new_take_profit": new_take_profit
+            }
+        }
+        order_results.additional_data.update(trailing_update_data)
         
         order.sub_orders = SubOrders(
             main_order=SubOrder(
@@ -61,7 +83,7 @@ class TrailingStopStrategy(BracketStrategy):
                 price=new_stop_loss,
                 contracts=order.sub_orders.stop_loss.contracts,
                 time=unix_timestamp_ms(),
-                api_rx=results.additional_data.get("new_stop_loss_order_api", {})
+                api_rx=order_results.additional_data.get("new_stop_loss_order_api", {})
             ),
             take_profit=SubOrder(
                 id=order.sub_orders.take_profit.id,
@@ -72,7 +94,7 @@ class TrailingStopStrategy(BracketStrategy):
             )
         )
         
-        pnl = calculate_pnl(
+        pnl:dict = calculate_pnl(
                     contracts=order.sub_orders.main_order.contracts,
                     main_price=order.sub_orders.main_order.price,
                     stop_price=order.sub_orders.stop_loss.price,
@@ -84,13 +106,14 @@ class TrailingStopStrategy(BracketStrategy):
             profit_without_fees=pnl.get("profit_without_fees"),
             loss_without_fees=pnl.get("loss_without_fees")
         )
+        
         order.results = Results(
             transaction=None,
             complete=False,
-            additional_data={}
+            additional_data=order_results.additional_data.copy()
         )
 
-        return results
+        return order_results
         
     def _handle_orders(self, broker:Broker, ticker:str, sell_contracts:float, new_stop_loss:float, new_take_profit:float, order:Order, dry_run_mode:bool = False) -> HandleResult:
         if not isinstance(broker, MarketOrderable):

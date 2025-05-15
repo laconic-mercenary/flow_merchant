@@ -118,11 +118,11 @@ class CurrencyToContracts(SignalEnhancement):
     
     def calculate_contracts(self, currency_amt: float, current_price: float, base_scale: float = 0.0) -> float:
         if currency_amt <= 0.0:
-            raise ValueError("currency_amt must be positive")
+            raise ValueError(f"currency_amt must be positive: {currency_amt}")
         if current_price <= 0.0:
-            raise ValueError("current_price must be positive")
-        if current_price < base_scale:
-            raise ValueError("current_price must be greater than base_scale")
+            raise ValueError(f"current_price must be positive: {current_price}")
+        #if current_price < base_scale:
+        #    raise ValueError(f"current_price must be greater than base_scale: {current_price} < {base_scale}")
         raw_qty = currency_amt / current_price
         ### the base scale is what the broker requires of multiples of the asset
         ### for example BTC must be in units of 0.0001 or similar
