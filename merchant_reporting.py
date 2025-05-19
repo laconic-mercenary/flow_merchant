@@ -115,6 +115,7 @@ class MerchantReporting:
         ### nothing for now, keep the traffic lean
         if not cfg.REPORTING_SIGNAL_RECEIVED():
             logging.debug("signal received reporting is disabled")
+            return
         msg = f"RX SIGNAL: ticker {signal.ticker()}, interval {signal.interval()}, action {signal.action()}, tags {signal.tags()}, time (UTC) {time_utc_as_str()}"
         author = main_author(db=database())
         DiscordClient().send_webhook_message(msg=WebhookMessage(

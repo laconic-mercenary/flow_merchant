@@ -16,10 +16,10 @@ def database() -> Database:
     return Database(
         author=Persona(
             name="Flow Merchant Bot",
-            avatar_url="https://i.imgur.com/tTSigdp.png",
-            portrait_url="https://i.imgur.com/tTSigdp.png",
-            quote="Follow the flow",
-            advice="Follow the flow"
+            avatar_url="https://i.imgur.com/h1HRTgU.jpeg",
+            portrait_url="https://i.imgur.com/h1HRTgU.jpeg",
+            quote="What`re ya buyin`?",
+            advice="What`re ya sellin`?"
         ),
         winners=[
            Persona(
